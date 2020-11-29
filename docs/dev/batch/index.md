@@ -42,6 +42,19 @@ and gradually add your own
 [transformations](#dataset-transformations). The remaining sections act as references for additional
 operations and advanced features.
 
+{% capture deprecation_note %}
+
+Starting with Flink 1.12 the DataSet has been soft deprecated.  We recommend
+that you use the DataStream API with BATCH [execution mode]({% link
+dev/datastream_execution_mode.md %}). The linked section also outlines cases
+where it makes sense to use the DataSet API but those cases will become rarer
+as development progresses and the DataSet API will eventually be removed.
+Please also see [FLIP-131](https://cwiki.apache.org/confluence/x/NR14CQ) for
+background information on this decision.
+
+{% endcapture %}
+{% include note.html content=deprecation_note %}
+
 * This will be replaced by the TOC
 {:toc}
 
@@ -50,7 +63,7 @@ Example Program
 
 The following program is a complete, working example of WordCount. You can copy &amp; paste the code
 to run it locally. You only have to include the correct Flink's library into your project
-(see Section [Linking with Flink]({{ site.baseurl }}/dev/projectsetup/dependencies.html)) and specify the imports. Then you are ready
+(see Section [Linking with Flink]({{ site.baseurl }}/dev/project-configuration.html)) and specify the imports. Then you are ready
 to go!
 
 <div class="codetabs" markdown="1">

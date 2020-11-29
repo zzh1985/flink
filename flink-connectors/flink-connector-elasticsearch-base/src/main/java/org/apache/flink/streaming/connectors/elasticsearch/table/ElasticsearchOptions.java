@@ -48,7 +48,7 @@ public class ElasticsearchOptions {
 			.stringType()
 			.asList()
 			.noDefaultValue()
-			.withDescription("Elasticseatch hosts to connect to.");
+			.withDescription("Elasticsearch hosts to connect to.");
 	public static final ConfigOption<String> INDEX_OPTION =
 		ConfigOptions.key("index")
 			.stringType()
@@ -59,6 +59,16 @@ public class ElasticsearchOptions {
 			.stringType()
 			.noDefaultValue()
 			.withDescription("Elasticsearch document type.");
+	public static final ConfigOption<String> PASSWORD_OPTION =
+		ConfigOptions.key("password")
+			.stringType()
+			.noDefaultValue()
+			.withDescription("Password used to connect to Elasticsearch instance.");
+	public static final ConfigOption<String> USERNAME_OPTION =
+		ConfigOptions.key("username")
+			.stringType()
+			.noDefaultValue()
+			.withDescription("Username used to connect to Elasticsearch instance.");
 	public static final ConfigOption<String> KEY_DELIMITER_OPTION =
 		ConfigOptions.key("document-id.key-delimiter")
 			.stringType()
@@ -84,17 +94,17 @@ public class ElasticsearchOptions {
 	public static final ConfigOption<Integer> BULK_FLUSH_MAX_ACTIONS_OPTION =
 		ConfigOptions.key("sink.bulk-flush.max-actions")
 			.intType()
-			.noDefaultValue()
+			.defaultValue(1000)
 			.withDescription("Maximum number of actions to buffer for each bulk request.");
 	public static final ConfigOption<MemorySize> BULK_FLASH_MAX_SIZE_OPTION =
 		ConfigOptions.key("sink.bulk-flush.max-size")
 			.memoryType()
-			.noDefaultValue()
+			.defaultValue(MemorySize.parse("2mb"))
 			.withDescription("Maximum size of buffered actions per bulk request");
 	public static final ConfigOption<Duration> BULK_FLUSH_INTERVAL_OPTION =
 		ConfigOptions.key("sink.bulk-flush.interval")
 			.durationType()
-			.noDefaultValue()
+			.defaultValue(Duration.ofSeconds(1))
 			.withDescription("Bulk flush interval");
 	public static final ConfigOption<BackOffType> BULK_FLUSH_BACKOFF_TYPE_OPTION =
 		ConfigOptions.key("sink.bulk-flush.backoff.strategy")

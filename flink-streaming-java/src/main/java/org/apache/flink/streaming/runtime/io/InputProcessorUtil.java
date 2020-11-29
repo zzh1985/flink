@@ -18,20 +18,24 @@
 package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.streaming.api.graph.StreamConfig;
+import org.apache.flink.streaming.api.operators.MailboxExecutor;
 import org.apache.flink.streaming.runtime.tasks.SubtaskCheckpointCoordinator;
+
+import org.apache.flink.shaded.guava18.com.google.common.collect.Iterables;
 
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.stream.IntStream;
+import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * Utility for creating {@link CheckpointedInputGate} based on checkpoint mode
@@ -39,32 +43,29 @@ import java.util.stream.IntStream;
  */
 @Internal
 public class InputProcessorUtil {
-
+	@SuppressWarnings("unchecked")
 	public static CheckpointedInputGate createCheckpointedInputGate(
 			AbstractInvokable toNotifyOnCheckpoint,
 			StreamConfig config,
 			SubtaskCheckpointCoordinator checkpointCoordinator,
 			IndexedInputGate[] inputGates,
 			TaskIOMetricGroup taskIOMetricGroup,
-			String taskName) {
-		InputGate inputGate = InputGateUtil.createInputGate(inputGates);
-		CheckpointBarrierHandler barrierHandler = createCheckpointBarrierHandler(
+			String taskName,
+			MailboxExecutor mailboxExecutor) {
+		CheckpointedInputGate[] checkpointedInputGates = createCheckpointedMultipleInputGate(
+			toNotifyOnCheckpoint,
 			config,
-			Arrays.stream(inputGates).mapToInt(InputGate::getNumberOfInputChannels),
 			checkpointCoordinator,
+			taskIOMetricGroup,
 			taskName,
-			generateChannelIndexToInputGateMap(inputGate),
-			generateInputGateToChannelIndexOffsetMap(inputGate),
-			toNotifyOnCheckpoint);
-		registerCheckpointMetrics(taskIOMetricGroup, barrierHandler);
-
-		barrierHandler.getBufferReceivedListener().ifPresent(inputGate::registerBufferReceivedListener);
-
-		return new CheckpointedInputGate(inputGate, barrierHandler);
+			mailboxExecutor,
+			new List[]{ Arrays.asList(inputGates) },
+			Collections.emptyList());
+		return Iterables.getOnlyElement(Arrays.asList(checkpointedInputGates));
 	}
 
 	/**
-	 * @return a pair of {@link CheckpointedInputGate} created for two corresponding
+	 * @return an array of {@link CheckpointedInputGate} created for corresponding
 	 * {@link InputGate}s supplied as parameters.
 	 */
 	public static CheckpointedInputGate[] createCheckpointedMultipleInputGate(
@@ -73,113 +74,88 @@ public class InputProcessorUtil {
 			SubtaskCheckpointCoordinator checkpointCoordinator,
 			TaskIOMetricGroup taskIOMetricGroup,
 			String taskName,
-			Collection<IndexedInputGate> ...inputGates) {
-
-		InputGate[] unionedInputGates = new InputGate[inputGates.length];
-		for (int i = 0; i < inputGates.length; i++) {
-			unionedInputGates[i] = InputGateUtil.createInputGate(inputGates[i].toArray(new IndexedInputGate[0]));
-		}
-
-		IntStream numberOfInputChannelsPerGate =
-			Arrays
-				.stream(inputGates)
-				.flatMap(collection -> collection.stream())
-				.sorted(Comparator.comparingInt(IndexedInputGate::getGateIndex))
-				.mapToInt(InputGate::getNumberOfInputChannels);
-
-		Map<InputGate, Integer> inputGateToChannelIndexOffset = generateInputGateToChannelIndexOffsetMap(unionedInputGates);
-		// Note that numberOfInputChannelsPerGate and inputGateToChannelIndexOffset have a bit different
-		// indexing and purposes.
-		//
-		// The numberOfInputChannelsPerGate is indexed based on flattened input gates, and sorted based on GateIndex,
-		// so that it can be used in combination with InputChannelInfo class.
-		//
-		// The inputGateToChannelIndexOffset is based upon unioned input gates and it's use for translating channel
-		// indexes from perspective of UnionInputGate to perspective of SingleInputGate.
-
+			MailboxExecutor mailboxExecutor,
+			List<IndexedInputGate>[] inputGates,
+			List<StreamTaskSourceInput<?>> sourceInputs) {
 		CheckpointBarrierHandler barrierHandler = createCheckpointBarrierHandler(
+			toNotifyOnCheckpoint,
 			config,
-			numberOfInputChannelsPerGate,
 			checkpointCoordinator,
 			taskName,
-			generateChannelIndexToInputGateMap(unionedInputGates),
-			inputGateToChannelIndexOffset,
-			toNotifyOnCheckpoint);
-		registerCheckpointMetrics(taskIOMetricGroup, barrierHandler);
-
-		barrierHandler.getBufferReceivedListener().ifPresent(listener -> {
-			for (final InputGate inputGate : unionedInputGates) {
-				inputGate.registerBufferReceivedListener(listener);
-			}
-		});
-
-		CheckpointedInputGate[] checkpointedInputGates = new CheckpointedInputGate[unionedInputGates.length];
-
-		for (int i = 0; i < unionedInputGates.length; i++) {
-			checkpointedInputGates[i] = new CheckpointedInputGate(
-				unionedInputGates[i], barrierHandler, inputGateToChannelIndexOffset.get(unionedInputGates[i]));
-		}
-
-		return checkpointedInputGates;
+			inputGates,
+			sourceInputs);
+		return createCheckpointedMultipleInputGate(
+			mailboxExecutor,
+			inputGates,
+			taskIOMetricGroup,
+			barrierHandler,
+			config);
 	}
 
-	private static CheckpointBarrierHandler createCheckpointBarrierHandler(
+	public static CheckpointedInputGate[] createCheckpointedMultipleInputGate(
+			MailboxExecutor mailboxExecutor,
+			List<IndexedInputGate>[] inputGates,
+			TaskIOMetricGroup taskIOMetricGroup,
+			CheckpointBarrierHandler barrierHandler,
+			StreamConfig config) {
+
+		registerCheckpointMetrics(taskIOMetricGroup, barrierHandler);
+
+		InputGate[] unionedInputGates = Arrays.stream(inputGates)
+			.map(InputGateUtil::createInputGate)
+			.toArray(InputGate[]::new);
+
+		return Arrays.stream(unionedInputGates)
+			.map(unionedInputGate -> new CheckpointedInputGate(
+				unionedInputGate,
+				barrierHandler,
+				mailboxExecutor,
+				config.isGraphContainingLoops() ? UpstreamRecoveryTracker.NO_OP : UpstreamRecoveryTracker.forInputGate(unionedInputGate)))
+			.toArray(CheckpointedInputGate[]::new);
+	}
+
+	public static CheckpointBarrierHandler createCheckpointBarrierHandler(
+			AbstractInvokable toNotifyOnCheckpoint,
 			StreamConfig config,
-			IntStream numberOfInputChannelsPerGate,
 			SubtaskCheckpointCoordinator checkpointCoordinator,
 			String taskName,
-			InputGate[] channelIndexToInputGate,
-			Map<InputGate, Integer> inputGateToChannelIndexOffset,
-			AbstractInvokable toNotifyOnCheckpoint) {
+			List<IndexedInputGate>[] inputGates,
+			List<StreamTaskSourceInput<?>> sourceInputs) {
+
+		CheckpointableInput[] inputs =
+			Stream.<CheckpointableInput>concat(
+					Arrays.stream(inputGates).flatMap(Collection::stream),
+					sourceInputs.stream())
+				.sorted(Comparator.comparing(CheckpointableInput::getInputGateIndex))
+				.toArray(CheckpointableInput[]::new);
+
 		switch (config.getCheckpointMode()) {
 			case EXACTLY_ONCE:
-				if (config.isUnalignedCheckpointsEnabled()) {
-					return new AlternatingCheckpointBarrierHandler(
-						new CheckpointBarrierAligner(
-							taskName,
-							channelIndexToInputGate,
-							inputGateToChannelIndexOffset,
-							toNotifyOnCheckpoint),
-						new CheckpointBarrierUnaligner(
-							numberOfInputChannelsPerGate.toArray(),
-							checkpointCoordinator,
-							taskName,
-							toNotifyOnCheckpoint),
-						toNotifyOnCheckpoint);
-				}
-				return new CheckpointBarrierAligner(
-					taskName,
-					channelIndexToInputGate,
-					inputGateToChannelIndexOffset,
-					toNotifyOnCheckpoint);
+				int numberOfChannels = (int) Arrays
+						.stream(inputs)
+						.flatMap(gate -> gate.getChannelInfos().stream())
+						.count();
+				CheckpointBarrierBehaviourController controller =
+					config.isUnalignedCheckpointsEnabled() ?
+						new AlternatingController(
+							new AlignedController(inputs),
+							new UnalignedController(checkpointCoordinator, inputs)) :
+						new AlignedController(inputs);
+				return new SingleCheckpointBarrierHandler(
+						taskName,
+						toNotifyOnCheckpoint,
+						numberOfChannels,
+						controller);
 			case AT_LEAST_ONCE:
-				return new CheckpointBarrierTracker(numberOfInputChannelsPerGate.sum(), toNotifyOnCheckpoint);
+				if (config.isUnalignedCheckpointsEnabled()) {
+					throw new IllegalStateException("Cannot use unaligned checkpoints with AT_LEAST_ONCE " +
+						"checkpointing mode");
+				}
+				int numInputChannels = Arrays.stream(inputs).mapToInt(CheckpointableInput::getNumberOfInputChannels).sum();
+				return new CheckpointBarrierTracker(numInputChannels, toNotifyOnCheckpoint);
 			default:
 				throw new UnsupportedOperationException("Unrecognized Checkpointing Mode: " + config.getCheckpointMode());
 		}
-	}
-
-	static InputGate[] generateChannelIndexToInputGateMap(InputGate ...inputGates) {
-		int numberOfInputChannels = Arrays.stream(inputGates).mapToInt(InputGate::getNumberOfInputChannels).sum();
-		InputGate[] channelIndexToInputGate = new InputGate[numberOfInputChannels];
-		int channelIndexOffset = 0;
-		for (InputGate inputGate: inputGates) {
-			for (int i = 0; i < inputGate.getNumberOfInputChannels(); ++i) {
-				channelIndexToInputGate[channelIndexOffset + i] = inputGate;
-			}
-			channelIndexOffset += inputGate.getNumberOfInputChannels();
-		}
-		return channelIndexToInputGate;
-	}
-
-	static Map<InputGate, Integer> generateInputGateToChannelIndexOffsetMap(InputGate ...inputGates) {
-		Map<InputGate, Integer> inputGateToChannelIndexOffset = new HashMap<>();
-		int channelIndexOffset = 0;
-		for (InputGate inputGate: inputGates) {
-			inputGateToChannelIndexOffset.put(inputGate, channelIndexOffset);
-			channelIndexOffset += inputGate.getNumberOfInputChannels();
-		}
-		return inputGateToChannelIndexOffset;
 	}
 
 	private static void registerCheckpointMetrics(TaskIOMetricGroup taskIOMetricGroup, CheckpointBarrierHandler barrierHandler) {

@@ -20,6 +20,7 @@ package org.apache.flink.api.common.serialization;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.util.UserCodeClassLoader;
 
 import java.io.Serializable;
 
@@ -58,13 +59,14 @@ public interface SerializationSchema<T> extends Serializable {
 	 * A contextual information provided for {@link #open(InitializationContext)} method. It can be used to:
 	 * <ul>
 	 *     <li>Register user metrics via {@link InitializationContext#getMetricGroup()}</li>
+	 *     <li>Access the user code class loader.</li>
 	 * </ul>
 	 */
 	@PublicEvolving
 	interface InitializationContext {
 		/**
 		 * Returns the metric group for the parallel subtask of the source that runs
-		 * this {@link DeserializationSchema}.
+		 * this {@link SerializationSchema}.
 		 *
 		 * <p>Instances of this class can be used to register new metrics with Flink and to create a nested
 		 * hierarchy based on the group names. See {@link MetricGroup} for more information for the metrics
@@ -73,5 +75,13 @@ public interface SerializationSchema<T> extends Serializable {
 		 * @see MetricGroup
 		 */
 		MetricGroup getMetricGroup();
+
+		/**
+		 * Gets the {@link UserCodeClassLoader} to load classes that are not in system's classpath,
+		 * but are part of the jar file of a user job.
+		 *
+		 * @see UserCodeClassLoader
+		 */
+		UserCodeClassLoader getUserCodeClassLoader();
 	}
 }

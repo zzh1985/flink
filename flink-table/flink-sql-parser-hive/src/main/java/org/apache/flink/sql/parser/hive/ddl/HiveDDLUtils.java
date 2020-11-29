@@ -18,7 +18,9 @@
 
 package org.apache.flink.sql.parser.hive.ddl;
 
+import org.apache.flink.sql.parser.SqlProperty;
 import org.apache.flink.sql.parser.ddl.SqlTableColumn;
+import org.apache.flink.sql.parser.ddl.SqlTableColumn.SqlRegularColumn;
 import org.apache.flink.sql.parser.ddl.SqlTableOption;
 import org.apache.flink.sql.parser.hive.impl.ParseException;
 import org.apache.flink.sql.parser.type.ExtendedSqlCollectionTypeNameSpec;
@@ -27,6 +29,8 @@ import org.apache.flink.sql.parser.type.SqlMapTypeNameSpec;
 import org.apache.flink.table.catalog.config.CatalogConfig;
 
 import org.apache.calcite.sql.SqlBasicTypeNameSpec;
+import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlCharStringLiteral;
 import org.apache.calcite.sql.SqlDataTypeSpec;
 import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
@@ -34,6 +38,9 @@ import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlTypeNameSpec;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.sql.util.SqlShuttle;
+import org.apache.calcite.util.NlsString;
+import org.apache.commons.lang3.StringEscapeUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -69,6 +76,8 @@ public class HiveDDLUtils {
 	private static final Set<String> RESERVED_DB_PROPERTIES = new HashSet<>();
 	private static final Set<String> RESERVED_TABLE_PROPERTIES = new HashSet<>();
 	private static final List<String> RESERVED_TABLE_PROP_PREFIX = new ArrayList<>();
+
+	private static final UnescapeStringLiteralShuttle UNESCAPE_SHUTTLE = new UnescapeStringLiteralShuttle();
 
 	static {
 		RESERVED_DB_PROPERTIES.addAll(Arrays.asList(ALTER_DATABASE_OP, DATABASE_LOCATION_URI));
@@ -158,13 +167,13 @@ public class HiveDDLUtils {
 	public static void convertDataTypes(SqlNodeList columns) throws ParseException {
 		if (columns != null) {
 			for (SqlNode node : columns) {
-				convertDataTypes((SqlTableColumn) node);
+				convertDataTypes((SqlRegularColumn) node);
 			}
 		}
 	}
 
 	// Check and convert data types to comply with HiveQL, e.g. TIMESTAMP and BINARY
-	public static void convertDataTypes(SqlTableColumn column) throws ParseException {
+	public static void convertDataTypes(SqlRegularColumn column) throws ParseException {
 		column.setType(convertDataTypes(column.getType()));
 	}
 
@@ -172,7 +181,8 @@ public class HiveDDLUtils {
 		SqlTypeNameSpec nameSpec = typeSpec.getTypeNameSpec();
 		SqlTypeNameSpec convertedNameSpec = convertDataTypes(nameSpec);
 		if (nameSpec != convertedNameSpec) {
-			typeSpec = new SqlDataTypeSpec(convertedNameSpec, typeSpec.getTimeZone(), typeSpec.getNullable(),
+			boolean nullable = typeSpec.getNullable() == null ? true : typeSpec.getNullable();
+			typeSpec = new SqlDataTypeSpec(convertedNameSpec, typeSpec.getTimeZone(), nullable,
 					typeSpec.getParserPosition());
 		}
 		return typeSpec;
@@ -303,18 +313,83 @@ public class HiveDDLUtils {
 	public static SqlNodeList deepCopyColList(SqlNodeList colList) {
 		SqlNodeList res = new SqlNodeList(colList.getParserPosition());
 		for (SqlNode node : colList) {
-			res.add(deepCopyTableColumn((SqlTableColumn) node));
+			res.add(deepCopyTableColumn((SqlRegularColumn) node));
 		}
 		return res;
 	}
 
-	public static SqlTableColumn deepCopyTableColumn(SqlTableColumn column) {
-		return new SqlTableColumn(
-				column.getName(),
-				column.getType(),
-				column.getConstraint().orElse(null),
-				column.getComment().orElse(null),
-				column.getParserPosition()
+	public static SqlRegularColumn deepCopyTableColumn(SqlRegularColumn column) {
+		return new SqlTableColumn.SqlRegularColumn(
+			column.getParserPosition(),
+			column.getName(),
+			column.getComment().orElse(null),
+			column.getType(),
+			column.getConstraint().orElse(null)
 		);
+	}
+
+	// the input of sql-client will escape '\', unescape it so that users can write hive dialect
+	public static void unescapeProperties(SqlNodeList properties) {
+		if (properties != null) {
+			properties.accept(UNESCAPE_SHUTTLE);
+		}
+	}
+
+	public static SqlCharStringLiteral unescapeStringLiteral(SqlCharStringLiteral literal) {
+		if (literal != null) {
+			return (SqlCharStringLiteral) literal.accept(UNESCAPE_SHUTTLE);
+		}
+		return null;
+	}
+
+	public static void unescapePartitionSpec(SqlNodeList partSpec) {
+		if (partSpec != null) {
+			partSpec.accept(UNESCAPE_SHUTTLE);
+		}
+	}
+
+	private static class UnescapeStringLiteralShuttle extends SqlShuttle {
+
+		@Override
+		public SqlNode visit(SqlNodeList nodeList) {
+			for (int i = 0; i < nodeList.size(); i++) {
+				SqlNode unescaped = nodeList.get(i).accept(this);
+				nodeList.set(i, unescaped);
+			}
+			return nodeList;
+		}
+
+		@Override
+		public SqlNode visit(SqlCall call) {
+			if (call instanceof SqlProperty) {
+				SqlProperty property = (SqlProperty) call;
+				Comparable comparable = SqlLiteral.value(property.getValue());
+				if (comparable instanceof NlsString) {
+					String val = StringEscapeUtils.unescapeJava(((NlsString) comparable).getValue());
+					return new SqlProperty(
+							property.getKey(),
+							SqlLiteral.createCharString(val, property.getValue().getParserPosition()),
+							property.getParserPosition());
+				}
+			} else if (call instanceof SqlTableOption) {
+				SqlTableOption option = (SqlTableOption) call;
+				String key = StringEscapeUtils.unescapeJava(option.getKeyString());
+				String val = StringEscapeUtils.unescapeJava(option.getValueString());
+				SqlNode keyNode = SqlLiteral.createCharString(key, option.getKey().getParserPosition());
+				SqlNode valNode = SqlLiteral.createCharString(val, option.getValue().getParserPosition());
+				return new SqlTableOption(keyNode, valNode, option.getParserPosition());
+			}
+			return call;
+		}
+
+		@Override
+		public SqlNode visit(SqlLiteral literal) {
+			if (literal instanceof SqlCharStringLiteral) {
+				SqlCharStringLiteral stringLiteral = (SqlCharStringLiteral) literal;
+				String unescaped = StringEscapeUtils.unescapeJava(stringLiteral.getNlsString().getValue());
+				return SqlLiteral.createCharString(unescaped, stringLiteral.getParserPosition());
+			}
+			return literal;
+		}
 	}
 }

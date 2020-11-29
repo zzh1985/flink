@@ -2,7 +2,7 @@
 title: "FileSystem SQL Connector"
 nav-title: FileSystem
 nav-parent_id: sql-connectors
-nav-pos: 3
+nav-pos: 7
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -24,7 +24,7 @@ under the License.
 -->
 
 This connector provides access to partitioned files in filesystems
-supported by the [Flink FileSystem abstraction]({{ site.baseurl}}/ops/filesystems/index.html).
+supported by the [Flink FileSystem abstraction]({{ site.baseurl}}/deployment/filesystems/index.html).
 
 * This will be replaced by the TOC
 {:toc}
@@ -51,7 +51,7 @@ CREATE TABLE MyUserTable (
                                         -- section for more details
   'partition.default-name' = '...',     -- optional: default partition name in case the dynamic partition
                                         -- column value is null/empty string
-  
+
   -- optional: the option to enable shuffle data by dynamic partition fields in sink phase, this can greatly
   -- reduce the number of file for filesystem sink but may lead data skew, the default value is false.
   'sink.shuffle-by-partition.enable' = '...',
@@ -61,11 +61,11 @@ CREATE TABLE MyUserTable (
 </div>
 </div>
 
-<span class="label label-danger">Attention</span> Make sure to include [Flink File System specific dependencies]({{ site.baseurl }}/ops/filesystems/index.html).
+<span class="label label-danger">Attention</span> Make sure to include [Flink File System specific dependencies]({{ site.baseurl }}/deployment/filesystems/index.html).
 
 <span class="label label-danger">Attention</span> File system sources for streaming is still under development. In the future, the community will add support for common streaming use cases, i.e., partition and directory monitoring.
 
-<span class="label label-danger">Attention</span> The behaviour of file system connector is much different from `previous legacy filesystem connector`: 
+<span class="label label-danger">Attention</span> The behaviour of file system connector is much different from `previous legacy filesystem connector`:
 the path parameter is specified for a directory not for a file and you can't get a human-readable file in the path that you declare.
 
 ## Partition Files
@@ -96,6 +96,9 @@ The file system connector supports multiple formats:
  - Avro: [Apache Avro](http://avro.apache.org). Support compression by configuring `avro.codec`.
  - Parquet: [Apache Parquet](http://parquet.apache.org). Compatible with Hive.
  - Orc: [Apache Orc](http://orc.apache.org). Compatible with Hive.
+ - Debezium-JSON: [debezium-json]({% link dev/table/connectors/formats/debezium.md %}).
+ - Canal-JSON: [canal-json]({% link dev/table/connectors/formats/canal.md %}).
+ - Raw: [raw]({% link dev/table/connectors/formats/raw.md %}).
 
 ## Streaming Sink
 
@@ -129,10 +132,17 @@ a timeout that specifies the maximum duration for which a file can be open.
         <td>The maximum part file size before rolling.</td>
     </tr>
     <tr>
-        <td><h5>sink.rolling-policy.time-interval</h5></td>
-        <td style="word-wrap: break-word;">30 m</td>
+        <td><h5>sink.rolling-policy.rollover-interval</h5></td>
+        <td style="word-wrap: break-word;">30 min</td>
         <td>Duration</td>
-        <td>The maximum time duration a part file can stay open before rolling (by default 30 min to avoid to many small files).</td>
+        <td>The maximum time duration a part file can stay open before rolling (by default 30 min to avoid to many small files).
+        The frequency at which this is checked is controlled by the 'sink.rolling-policy.check-interval' option.</td>
+    </tr>
+    <tr>
+        <td><h5>sink.rolling-policy.check-interval</h5></td>
+        <td style="word-wrap: break-word;">1 min</td>
+        <td>Duration</td>
+        <td>The interval for checking time based rolling policies. This controls the frequency to check whether a part file should rollover based on 'sink.rolling-policy.rollover-interval'.</td>
     </tr>
   </tbody>
 </table>
@@ -140,12 +150,46 @@ a timeout that specifies the maximum duration for which a file can be open.
 **NOTE:** For bulk formats (parquet, orc, avro), the rolling policy in combination with the checkpoint interval(pending files
 become finished on the next checkpoint) control the size and number of these parts.
 
-**NOTE:** For row formats (csv, json), you can set the parameter `sink.rolling-policy.file-size` or `sink.rolling-policy.time-interval` in the connector properties and parameter `execution.checkpointing.interval` in flink-conf.yaml together
+**NOTE:** For row formats (csv, json), you can set the parameter `sink.rolling-policy.file-size` or `sink.rolling-policy.rollover-interval` in the connector properties and parameter `execution.checkpointing.interval` in flink-conf.yaml together
 if you don't want to wait a long period before observe the data exists in file system. For other formats (avro, orc), you can just set parameter `execution.checkpointing.interval` in flink-conf.yaml.
+
+### File Compaction
+
+The file sink supports file compactions, which allows applications to have smaller checkpoint intervals without generating a large number of files.
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+        <th class="text-left" style="width: 20%">Key</th>
+        <th class="text-left" style="width: 15%">Default</th>
+        <th class="text-left" style="width: 10%">Type</th>
+        <th class="text-left" style="width: 55%">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+        <td><h5>auto-compaction</h5></td>
+        <td style="word-wrap: break-word;">false</td>
+        <td>Boolean</td>
+        <td>Whether to enable automatic compaction in streaming sink or not. The data will be written to temporary files. After the checkpoint is completed, the temporary files generated by a checkpoint will be compacted. The temporary files are invisible before compaction.</td>
+    </tr>
+    <tr>
+        <td><h5>compaction.file-size</h5></td>
+        <td style="word-wrap: break-word;">(none)</td>
+        <td>MemorySize</td>
+        <td>The compaction target file size, the default value is the rolling file size.</td>
+    </tr>
+  </tbody>
+</table>
+
+If enabled, file compaction will merge multiple small files into larger files based on the target file size.
+When running file compaction in production, please be aware that:
+- Only files in a single checkpoint are compacted, that is, at least the same number of files as the number of checkpoints is generated.
+- The file before merging is invisible, so the visibility of the file may be: checkpoint interval + compaction time.
 
 ### Partition Commit
 
-After writing a partition, it is often necessary to notify downstream applications. For example, add the partition to a Hive metastore or writing a `_SUCCESS` file in the directory. The file system sink contains a partition commit feature that allows configuring custom policies. Commit actions are based on a combination of `triggers` and `policies`. 
+After writing a partition, it is often necessary to notify downstream applications. For example, add the partition to a Hive metastore or writing a `_SUCCESS` file in the directory. The file system sink contains a partition commit feature that allows configuring custom policies. Commit actions are based on a combination of `triggers` and `policies`.
 
 - Trigger: The timing of the commit of the partition can be determined by the watermark with the time extracted from the partition, or by processing time.
 - Policy: How to commit a partition, built-in policies support for the commit of success files and metastore, you can also implement your own policies, such as triggering hive's analysis to generate statistics, or merging small files, etc.
@@ -243,7 +287,7 @@ Time extractors define extracting time from partition values.
   </tbody>
 </table>
 
-The default extractor is based on a timestamp pattern composed of your partition fields. You can also specify an implementation for fully custom partition extraction based on the `PartitionTimeExtractor` interface. 
+The default extractor is based on a timestamp pattern composed of your partition fields. You can also specify an implementation for fully custom partition extraction based on the `PartitionTimeExtractor` interface.
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -264,7 +308,7 @@ public class HourPartTimeExtractor implements PartitionTimeExtractor {
 
 #### Partition Commit Policy
 
-The partition commit policy defines what action is taken when partitions are committed. 
+The partition commit policy defines what action is taken when partitions are committed.
 
 - The first is metastore, only hive table supports metastore policy, file system manages partitions through directory structure.
 - The second is the success file, which will write an empty file in the directory corresponding to the partition.
@@ -293,7 +337,7 @@ The partition commit policy defines what action is taken when partitions are com
     </tr>
     <tr>
         <td><h5>sink.partition-commit.success-file.name</h5></td>
-        <td style="word-wrap: break-word;">(none)</td>
+        <td style="word-wrap: break-word;">_SUCCESS</td>
         <td>String</td>
         <td>The file name for success-file partition commit policy, default is '_SUCCESS'.</td>
     </tr>
@@ -332,7 +376,7 @@ public class AnalysisCommitPolicy implements PartitionCommitPolicy {
 
 ## Full Example
 
-The below shows how the file system connector can be used to write a streaming query to write data from Kafka into a file system and runs a batch query to read that data back out. 
+The below shows how the file system connector can be used to write a streaming query to write data from Kafka into a file system and runs a batch query to read that data back out.
 
 {% highlight sql %}
 
@@ -352,7 +396,6 @@ CREATE TABLE fs_table (
   'connector'='filesystem',
   'path'='...',
   'format'='parquet',
-  'partition.time-extractor.timestamp-pattern'='$dt $hour:00:00',
   'sink.partition-commit.delay'='1 h',
   'sink.partition-commit.policy.kind'='success-file'
 );

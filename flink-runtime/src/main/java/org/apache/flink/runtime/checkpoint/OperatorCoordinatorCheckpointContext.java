@@ -18,8 +18,11 @@
 
 package org.apache.flink.runtime.checkpoint;
 
+import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.operators.coordination.OperatorInfo;
+
+import javax.annotation.Nullable;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -27,7 +30,7 @@ import java.util.concurrent.CompletableFuture;
  * This context is the interface through which the {@link CheckpointCoordinator} interacts with an
  * {@link OperatorCoordinator} during checkpointing and checkpoint restoring.
  */
-public interface OperatorCoordinatorCheckpointContext extends OperatorInfo {
+public interface OperatorCoordinatorCheckpointContext extends OperatorInfo, CheckpointListener {
 
 	void checkpointCoordinator(long checkpointId, CompletableFuture<byte[]> result) throws Exception;
 
@@ -35,7 +38,32 @@ public interface OperatorCoordinatorCheckpointContext extends OperatorInfo {
 
 	void abortCurrentTriggering();
 
-	void checkpointComplete(long checkpointId);
+	/**
+	 * We override the method here to remove the checked exception. Please check the
+	 * Java docs of {@link CheckpointListener#notifyCheckpointComplete(long)} for more
+	 * detail semantic of the method.
+	 */
+	@Override
+	void notifyCheckpointComplete(long checkpointId);
 
-	void resetToCheckpoint(byte[] checkpointData) throws Exception;
+	/**
+	 * We override the method here to remove the checked exception. Please check the
+	 * Java docs of {@link CheckpointListener#notifyCheckpointAborted(long)} for more
+	 * detail semantic of the method.
+	 */
+	@Override
+	default void notifyCheckpointAborted(long checkpointId) {}
+
+	/**
+	 * Resets the coordinator to the checkpoint with the given state.
+	 *
+	 * <p>This method is called with a null state argument in the following situations:
+	 * <ul>
+	 *   <li>There is a recovery and there was no completed checkpoint yet.</li>
+	 *   <li>There is a recovery from a completed checkpoint/savepoint but it contained no state
+	 *       for the coordinator.</li>
+	 * </ul>
+	 * In both cases, the coordinator should reset to an empty (new) state.
+	 */
+	void resetToCheckpoint(@Nullable byte[] checkpointData) throws Exception;
 }

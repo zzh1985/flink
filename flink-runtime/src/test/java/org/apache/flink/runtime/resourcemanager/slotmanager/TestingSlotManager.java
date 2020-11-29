@@ -26,6 +26,7 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.resourcemanager.SlotRequest;
 import org.apache.flink.runtime.resourcemanager.WorkerResourceSpec;
 import org.apache.flink.runtime.resourcemanager.registration.TaskExecutorConnection;
+import org.apache.flink.runtime.slots.ResourceRequirements;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 
 import java.util.Map;
@@ -109,6 +110,10 @@ public class TestingSlotManager implements SlotManager {
 	}
 
 	@Override
+	public void processResourceRequirements(ResourceRequirements resourceRequirements) {
+	}
+
+	@Override
 	public boolean registerSlotRequest(SlotRequest slotRequest) {
 		return false;
 	}
@@ -119,8 +124,8 @@ public class TestingSlotManager implements SlotManager {
 	}
 
 	@Override
-	public void registerTaskManager(TaskExecutorConnection taskExecutorConnection, SlotReport initialSlotReport) {
-
+	public boolean registerTaskManager(TaskExecutorConnection taskExecutorConnection, SlotReport initialSlotReport) {
+		return true;
 	}
 
 	@Override
@@ -141,11 +146,6 @@ public class TestingSlotManager implements SlotManager {
 	@Override
 	public void setFailUnfulfillableRequest(boolean failUnfulfillableRequest) {
 		setFailUnfulfillableRequestConsumer.accept(failUnfulfillableRequest);
-	}
-
-	@Override
-	public void unregisterTaskManagersAndReleaseResources() {
-
 	}
 
 	@Override

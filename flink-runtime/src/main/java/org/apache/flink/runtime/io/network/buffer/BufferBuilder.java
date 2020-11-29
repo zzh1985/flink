@@ -41,6 +41,8 @@ public class BufferBuilder {
 
 	private final SettablePositionMarker positionMarker = new SettablePositionMarker();
 
+	private boolean bufferConsumerCreated = false;
+
 	public BufferBuilder(MemorySegment memorySegment, BufferRecycler recycler) {
 		this.memorySegment = checkNotNull(memorySegment);
 		this.recycler = checkNotNull(recycler);
@@ -53,11 +55,26 @@ public class BufferBuilder {
 	 * @return created matching instance of {@link BufferConsumer} to this {@link BufferBuilder}.
 	 */
 	public BufferConsumer createBufferConsumer() {
+		return createBufferConsumer(positionMarker.cachedPosition);
+	}
+
+	/**
+	 * This method always creates a {@link BufferConsumer} starting from position 0 of {@link MemorySegment}.
+	 *
+	 * @return created matching instance of {@link BufferConsumer} to this {@link BufferBuilder}.
+	 */
+	public BufferConsumer createBufferConsumerFromBeginning() {
+		return createBufferConsumer(0);
+	}
+
+	private BufferConsumer createBufferConsumer(int currentReaderPosition) {
+		checkState(!bufferConsumerCreated, "Two BufferConsumer shouldn't exist for one BufferBuilder");
+		bufferConsumerCreated = true;
 		return new BufferConsumer(
 			memorySegment,
 			recycler,
 			positionMarker,
-			positionMarker.cachedPosition);
+			currentReaderPosition);
 	}
 
 	/**
@@ -123,6 +140,10 @@ public class BufferBuilder {
 		return getMaxCapacity() - positionMarker.getCached();
 	}
 
+	public int getCommittedBytes() {
+		return positionMarker.getCached();
+	}
+
 	public int getMaxCapacity() {
 		return memorySegment.size();
 	}
@@ -130,6 +151,10 @@ public class BufferBuilder {
 	@VisibleForTesting
 	public BufferRecycler getRecycler() {
 		return recycler;
+	}
+
+	public void recycle() {
+		recycler.recycle(memorySegment);
 	}
 
 	@VisibleForTesting
@@ -167,7 +192,7 @@ public class BufferBuilder {
 	 *
 	 * <p>Remember to commit the {@link SettablePositionMarker} to make the changes visible.
 	 */
-	private static class SettablePositionMarker implements PositionMarker {
+	static class SettablePositionMarker implements PositionMarker {
 		private volatile int position = 0;
 
 		/**

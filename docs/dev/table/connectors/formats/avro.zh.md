@@ -29,21 +29,20 @@ under the License.
 * This will be replaced by the TOC
 {:toc}
 
-The [Apache Avro](https://avro.apache.org/) format allows to read and write Avro data based on an Avro schema. Currently, the Avro schema is derived from table schema.
+[Apache Avro](https://avro.apache.org/) format 允许基于 Avro schema 读取和写入 Avro 数据。目前，Avro schema 从 table schema 推导而来。
 
-Dependencies
+依赖
 ------------
 
-In order to setup the Avro format, the following table provides dependency information for both projects using a build automation tool (such as Maven or SBT) and SQL Client with SQL JAR bundles.
+{% assign connector = site.data.sql-connectors['avro'] %} 
+{% include sql-connector-download-table.html 
+    connector=connector
+%}
 
-| Maven dependency   | SQL Client JAR         |
-| :----------------- | :----------------------|
-| `flink-avro`       | [Pre-bundled Hadoop](https://flink.apache.org/downloads.html#additional-components) |
-
-How to create a table with Avro format
+如何使用 Avro format 创建表
 ----------------
 
-Here is an example to create a table using Kafka connector and Avro format.
+这是使用 Kafka 连接器和 Avro format 创建表的示例。
 
 <div class="codetabs" markdown="1">
 <div data-lang="SQL" markdown="1">
@@ -53,7 +52,7 @@ CREATE TABLE user_behavior (
   item_id BIGINT,
   category_id BIGINT,
   behavior STRING,
-  ts TIMESTAMP(3),
+  ts TIMESTAMP(3)
 ) WITH (
  'connector' = 'kafka',
  'topic' = 'user_behavior',
@@ -65,42 +64,48 @@ CREATE TABLE user_behavior (
 </div>
 </div>
 
-Format Options
+Format 参数
 ----------------
 
 <table class="table table-bordered">
     <thead>
       <tr>
-        <th class="text-left" style="width: 25%">Option</th>
-        <th class="text-center" style="width: 8%">Required</th>
-        <th class="text-center" style="width: 7%">Default</th>
-        <th class="text-center" style="width: 10%">Type</th>
-        <th class="text-center" style="width: 50%">Description</th>
+        <th class="text-left" style="width: 25%">参数</th>
+        <th class="text-center" style="width: 10%">是否必选</th>
+        <th class="text-center" style="width: 10%">默认值</th>
+        <th class="text-center" style="width: 10%">类型</th>
+        <th class="text-center" style="width: 45%">描述</th>
       </tr>
     </thead>
     <tbody>
     <tr>
       <td><h5>format</h5></td>
-      <td>required</td>
+      <td>必要</td>
       <td style="word-wrap: break-word;">(none)</td>
       <td>String</td>
-      <td>Specify what format to use, here should be 'avro'.</td>
+      <td>指定使用什么 format，这里应该是 <code>'avro'</code>。</td>
+    </tr>
+    <tr>
+      <td><h5>avro.codec</h5></td>
+      <td>可选</td>
+      <td style="word-wrap: break-word;">(none)</td>
+      <td>String</td>
+      <td>仅用于 <a href="{% link dev/table/connectors/filesystem.zh.md %}">filesystem</a>，avro 压缩编解码器。默认不压缩。目前支持：deflate、snappy、bzip2、xz。</td>
     </tr>
     </tbody>
 </table>
 
-Data Type Mapping
+数据类型映射
 ----------------
 
-Currently, the Avro schema is always derived from table schema. Explicitly defining an Avro schema is not supported yet.
-So the following table lists the type mapping from Flink type to Avro type.
+目前，Avro schema 通常是从 table schema 中推导而来。尚不支持显式定义 Avro schema。因此，下表列出了从 Flink 类型到 Avro 类型的类型映射。
 
 <table class="table table-bordered">
     <thead>
       <tr>
-        <th class="text-left">Flink Data Type</th>
-        <th class="text-center">Avro type</th>
-        <th class="text-center">Avro logical type</th>
+        <th class="text-left">Flink SQL 类型</th>
+        <th class="text-left">Avro 类型</th>
+        <th class="text-left">Avro 逻辑类型</th>
       </tr>
     </thead>
     <tbody>
@@ -110,94 +115,90 @@ So the following table lists the type mapping from Flink type to Avro type.
       <td></td>
     </tr>
     <tr>
-      <td>BOOLEAN</td>
-      <td>boolean</td>
+      <td><code>BOOLEAN</code></td>
+      <td><code>boolean</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>BINARY / VARBINARY</td>
-      <td>bytes</td>
+      <td><code>BINARY / VARBINARY</code></td>
+      <td><code>bytes</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>DECIMAL</td>
-      <td>fixed</td>
-      <td>decimal</td>
+      <td><code>DECIMAL</code></td>
+      <td><code>fixed</code></td>
+      <td><code>decimal</code></td>
     </tr>
     <tr>
-      <td>TINYINT</td>
-      <td>int</td>
+      <td><code>TINYINT</code></td>
+      <td><code>int</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>SMALLINT</td>
-      <td>int</td>
+      <td><code>SMALLINT</code></td>
+      <td><code>int</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>INT</td>
-      <td>int</td>
+      <td><code>INT</code></td>
+      <td><code>int</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>BIGINT</td>
-      <td>long</td>
+      <td><code>BIGINT</code></td>
+      <td><code>long</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>FLOAT</td>
-      <td>float</td>
+      <td><code>FLOAT</code></td>
+      <td><code>float</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>DOUBLE</td>
-      <td>double</td>
+      <td><code>DOUBLE</code></td>
+      <td><code>double</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>DATE</td>
-      <td>int</td>
-      <td>date</td>
+      <td><code>DATE</code></td>
+      <td><code>int</code></td>
+      <td><code>date</code></td>
     </tr>
     <tr>
-      <td>TIME</td>
-      <td>int</td>
-      <td>time-millis</td>
+      <td><code>TIME</code></td>
+      <td><code>int</code></td>
+      <td><code>time-millis</code></td>
     </tr>
     <tr>
-      <td>TIMESTAMP</td>
-      <td>long</td>
-      <td>timestamp-millis</td>
+      <td><code>TIMESTAMP</code></td>
+      <td><code>long</code></td>
+      <td><code>timestamp-millis</code></td>
     </tr>
     <tr>
-      <td>ARRAY</td>
-      <td>array</td>
+      <td><code>ARRAY</code></td>
+      <td><code>array</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>MAP<br>
-      (key must be string/char/varchar type)</td>
-      <td>map</td>
+      <td><code>MAP</code><br>
+      (key 必须是 string/char/varchar 类型)</td>
+      <td><code>map</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>MULTISET<br>
-      (element must be string/char/varchar type)</td>
-      <td>map</td>
+      <td><code>MULTISET</code><br>
+      (元素必须是 string/char/varchar 类型)</td>
+      <td><code>map</code></td>
       <td></td>
     </tr>
     <tr>
-      <td>ROW</td>
-      <td>record</td>
+      <td><code>ROW</code></td>
+      <td><code>record</code></td>
       <td></td>
     </tr>
     </tbody>
 </table>
 
-In addition to the types listed above, Flink supports reading/writing nullable types. Flink maps nullable types to Avro `union(something, null)`, where `something` is the Avro type converted from Flink type.
+除了上面列出的类型，Flink 支持读取/写入 nullable 的类型。Flink 将 nullable 的类型映射到 Avro `union(something, null)`，其中 `something` 是从 Flink 类型转换的 Avro 类型。
 
-You can refer to Avro Specification for more information about Avro types: [https://avro.apache.org/docs/current/spec.html](https://avro.apache.org/docs/current/spec.html).
-
-
-
-
+您可以参考 [Avro 规范](https://avro.apache.org/docs/current/spec.html) 获取更多有关 Avro 类型的信息。

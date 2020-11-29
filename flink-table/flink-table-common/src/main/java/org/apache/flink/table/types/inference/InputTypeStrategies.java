@@ -26,6 +26,7 @@ import org.apache.flink.table.types.inference.strategies.AnyArgumentTypeStrategy
 import org.apache.flink.table.types.inference.strategies.CastInputTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.CommonInputTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.ComparableTypeStrategy;
+import org.apache.flink.table.types.inference.strategies.CompositeArgumentTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.ConstraintArgumentTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.ExplicitArgumentTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.FamilyArgumentTypeStrategy;
@@ -67,15 +68,9 @@ public final class InputTypeStrategies {
 	public static final WildcardInputTypeStrategy WILDCARD = new WildcardInputTypeStrategy();
 
 	/**
-	 * An strategy that lets you apply other strategies for subsequences of
-	 * the actual arguments.
-	 *
-	 * <p>The {@link #sequence(ArgumentTypeStrategy...)} should be preferred in most of the cases. Use this strategy
-	 * only if you need to apply a common logic to a subsequence of the arguments.
+	 * Strategy that does not expect any arguments.
 	 */
-	public static SubsequenceStrategyBuilder compositeSequence() {
-		return new SubsequenceStrategyBuilder();
-	}
+	public static final InputTypeStrategy NO_ARGS = sequence();
 
 	/**
 	 * Strategy for a function signature like {@code f(STRING, NUMERIC)} using a sequence of
@@ -140,6 +135,17 @@ public final class InputTypeStrategies {
 	}
 
 	/**
+	 * An strategy that lets you apply other strategies for subsequences of
+	 * the actual arguments.
+	 *
+	 * <p>The {@link #sequence(ArgumentTypeStrategy...)} should be preferred in most of the cases. Use this strategy
+	 * only if you need to apply a common logic to a subsequence of the arguments.
+	 */
+	public static SubsequenceStrategyBuilder compositeSequence() {
+		return new SubsequenceStrategyBuilder();
+	}
+
+	/**
 	 * Strategy for a disjunction of multiple {@link InputTypeStrategy}s into one like
 	 * {@code f(NUMERIC) || f(STRING)}.
 	 *
@@ -192,6 +198,11 @@ public final class InputTypeStrategies {
 	 * Strategy that checks if an argument is a literal or NULL.
 	 */
 	public static final LiteralArgumentTypeStrategy LITERAL_OR_NULL = new LiteralArgumentTypeStrategy(true);
+
+	/**
+	 * Strategy that checks that the argument has a composite type.
+	 */
+	public static final ArgumentTypeStrategy COMPOSITE = new CompositeArgumentTypeStrategy();
 
 	/**
 	 * Strategy for an argument that corresponds to an explicitly defined type casting.

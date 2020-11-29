@@ -100,7 +100,7 @@ the right thing depending on the context: if you are executing your program
 inside an IDE or as a regular Java program it will create a local environment
 that will execute your program on your local machine. If you created a JAR file
 from your program, and invoke it through the [command line]({{ site.baseurl
-}}/ops/cli.html), the Flink cluster manager will execute your main method and
+}}/deployment/cli.html), the Flink cluster manager will execute your main method and
 `getExecutionEnvironment()` will return an execution environment for executing
 your program on a cluster.
 
@@ -170,7 +170,7 @@ the right thing depending on the context: if you are executing your program
 inside an IDE or as a regular Java program it will create a local environment
 that will execute your program on your local machine. If you created a JAR file
 from your program, and invoke it through the [command line]({{ site.baseurl
-}}/ops/cli.html), the Flink cluster manager will execute your main method and
+}}/deployment/cli.html), the Flink cluster manager will execute your main method and
 `getExecutionEnvironment()` will return an execution environment for executing
 your program on a cluster.
 
@@ -231,7 +231,7 @@ just submitted. For instance, here is how to implement the semantics of
 {% highlight java %}
 final JobClient jobClient = env.executeAsync();
 
-final JobExecutionResult jobExecutionResult = jobClient.getJobExecutionResult(userClassloader).get();
+final JobExecutionResult jobExecutionResult = jobClient.getJobExecutionResult().get();
 {% endhighlight %}
 
 That last part about program execution is crucial to understanding when and how
@@ -274,8 +274,8 @@ public class WindowWordCount {
         DataStream<Tuple2<String, Integer>> dataStream = env
                 .socketTextStream("localhost", 9999)
                 .flatMap(new Splitter())
-                .keyBy(0)
-                .timeWindow(Time.seconds(5))
+                .keyBy(value -> value.f0)
+                .window(TumblingProcessingTimeWindows.of(Time.seconds(5)))
                 .sum(1);
 
         dataStream.print();
@@ -311,8 +311,8 @@ object WindowWordCount {
 
     val counts = text.flatMap { _.toLowerCase.split("\\W+") filter { _.nonEmpty } }
       .map { (_, 1) }
-      .keyBy(0)
-      .timeWindow(Time.seconds(5))
+      .keyBy(_._1)
+      .window(TumblingProcessingTimeWindows.of(Time.seconds(5)))
       .sum(1)
 
     counts.print()
@@ -395,7 +395,7 @@ Collection-based:
 Custom:
 
 - `addSource` - Attach a new source function. For example, to read from Apache Kafka you can use
-    `addSource(new FlinkKafkaConsumer010<>(...))`. See [connectors]({{ site.baseurl }}/dev/connectors/index.html) for more details.
+    `addSource(new FlinkKafkaConsumer<>(...))`. See [connectors]({{ site.baseurl }}/dev/connectors/index.html) for more details.
 
 </div>
 
@@ -453,7 +453,7 @@ Collection-based:
 Custom:
 
 - `addSource` - Attach a new source function. For example, to read from Apache Kafka you can use
-    `addSource(new FlinkKafkaConsumer010<>(...))`. See [connectors]({{ site.baseurl }}/dev/connectors/) for more details.
+    `addSource(new FlinkKafkaConsumer<>(...))`. See [connectors]({{ site.baseurl }}/dev/connectors/) for more details.
 
 </div>
 </div>
@@ -535,7 +535,7 @@ at-least-once semantics. The data flushing to the target system depends on the i
 OutputFormat. This means that not all elements send to the OutputFormat are immediately showing up
 in the target system. Also, in failure cases, those records might be lost.
 
-For reliable, exactly-once delivery of a stream into a file system, use the `flink-connector-filesystem`.
+For reliable, exactly-once delivery of a stream into a file system, use the `StreamingFileSink`.
 Also, custom implementations through the `.addSink(...)` method can participate in Flink's checkpointing
 for exactly-once semantics.
 
@@ -551,7 +551,7 @@ Iterations
 
 Iterative streaming programs implement a step function and embed it into an `IterativeStream`. As a DataStream
 program may never finish, there is no maximum number of iterations. Instead, you need to specify which part
-of the stream is fed back to the iteration and which part is forwarded downstream using a `split` transformation
+of the stream is fed back to the iteration and which part is forwarded downstream using a [side output]({% link dev/stream/side_output.md %})
 or a `filter`. Here, we show an example using filters. First, we define an `IterativeStream`
 
 {% highlight java %}
@@ -614,7 +614,7 @@ DataStream<Long> lessThanZero = minusOne.filter(new FilterFunction<Long>() {
 
 Iterative streaming programs implement a step function and embed it into an `IterativeStream`. As a DataStream
 program may never finish, there is no maximum number of iterations. Instead, you need to specify which part
-of the stream is fed back to the iteration and which part is forwarded downstream using a `split` transformation
+of the stream is fed back to the iteration and which part is forwarded downstream using a [side output]({% link dev/stream/side_output.md %})
 or a `filter`. Here, we show an example iteration where the body (the part of the computation that is repeated)
 is a simple map transformation, and the elements that are fed back are distinguished by the elements that
 are forwarded downstream using filters.

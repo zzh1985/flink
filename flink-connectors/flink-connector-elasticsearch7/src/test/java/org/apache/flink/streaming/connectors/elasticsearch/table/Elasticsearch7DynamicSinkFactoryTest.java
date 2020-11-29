@@ -99,7 +99,7 @@ public class Elasticsearch7DynamicSinkFactoryTest {
 
 		thrown.expect(ValidationException.class);
 		thrown.expectMessage(
-			"'sink.bulk-flush.max-size' must be at least 1mb character. Got: 1024 bytes");
+			"'sink.bulk-flush.max-size' must be in MB granularity. Got: 1024 bytes");
 		sinkFactory.createDynamicTableSink(
 			context()
 				.withSchema(TableSchema.builder()
@@ -137,7 +137,7 @@ public class Elasticsearch7DynamicSinkFactoryTest {
 
 		thrown.expect(ValidationException.class);
 		thrown.expectMessage(
-			"'sink.bulk-flush.max-actions' must be at least 1 character. Got: 0");
+			"'sink.bulk-flush.max-actions' must be at least 1. Got: -2");
 		sinkFactory.createDynamicTableSink(
 			context()
 				.withSchema(TableSchema.builder()
@@ -145,7 +145,7 @@ public class Elasticsearch7DynamicSinkFactoryTest {
 					.build())
 				.withOption(ElasticsearchOptions.INDEX_OPTION.key(), "MyIndex")
 				.withOption(ElasticsearchOptions.HOSTS_OPTION.key(), "http://localhost:1234")
-				.withOption(ElasticsearchOptions.BULK_FLUSH_MAX_ACTIONS_OPTION.key(), "0")
+				.withOption(ElasticsearchOptions.BULK_FLUSH_MAX_ACTIONS_OPTION.key(), "-2")
 				.build()
 		);
 	}
@@ -194,6 +194,26 @@ public class Elasticsearch7DynamicSinkFactoryTest {
 				.withOption(ElasticsearchOptions.INDEX_OPTION.key(), "MyIndex")
 				.withOption(ElasticsearchOptions.HOSTS_OPTION.key(), "http://localhost:1234")
 				.withOption(ElasticsearchOptions.BULK_FLUSH_BACKOFF_DELAY_OPTION.key(), "1s")
+				.build()
+		);
+	}
+
+	@Test
+	public void validateWrongCredential() {
+		Elasticsearch7DynamicSinkFactory sinkFactory = new Elasticsearch7DynamicSinkFactory();
+
+		thrown.expect(ValidationException.class);
+		thrown.expectMessage(
+			"'username' and 'password' must be set at the same time. Got: username 'username' and password ''");
+		sinkFactory.createDynamicTableSink(
+			context()
+				.withSchema(TableSchema.builder()
+					.field("a", DataTypes.TIME())
+					.build())
+				.withOption(ElasticsearchOptions.INDEX_OPTION.key(), "MyIndex")
+				.withOption(ElasticsearchOptions.HOSTS_OPTION.key(), "http://localhost:1234")
+				.withOption(ElasticsearchOptions.USERNAME_OPTION.key(), "username")
+				.withOption(ElasticsearchOptions.PASSWORD_OPTION.key(), "")
 				.build()
 		);
 	}

@@ -56,7 +56,7 @@ under the License.
 
  1. 将 `flink-queryable-state-runtime{{ site.scala_version_suffix }}-{{site.version }}.jar`
 从 [Flink distribution](https://flink.apache.org/downloads.html "Apache Flink: Downloads") 的 `opt/` 目录拷贝到 `lib/` 目录；
- 2. 将参数 `queryable-state.enable` 设置为 `true`。详细信息以及其它配置可参考文档 [Configuration]({{ site.baseurl }}/zh/ops/config.html#queryable-state)。
+ 2. 将参数 `queryable-state.enable` 设置为 `true`。详细信息以及其它配置可参考文档 [Configuration]({{ site.baseurl }}/zh/deployment/config.html#queryable-state)。
 
 为了验证集群的 queryable state 已经被激活，可以检查任意 task manager 的日志中是否包含 "Started the Queryable State Proxy Server @ ..."。
 
@@ -83,11 +83,6 @@ QueryableStateStream asQueryableState(
 // Shortcut for explicit ValueStateDescriptor variant
 QueryableStateStream asQueryableState(String queryableStateName)
 
-// FoldingState
-QueryableStateStream asQueryableState(
-    String queryableStateName,
-    FoldingStateDescriptor stateDescriptor)
-
 // ReducingState
 QueryableStateStream asQueryableState(
     String queryableStateName,
@@ -102,7 +97,7 @@ QueryableStateStream asQueryableState(
 返回的 `QueryableStateStream` 可以被视作一个sink，而且**不能再**被进一步转换。在内部实现上，一个 `QueryableStateStream` 被转换成一个 operator，使用输入的数据来更新 queryable state。state 如何更新是由 `asQueryableState` 提供的 `StateDescriptor` 来决定的。在下面的代码中, keyed stream 的所有数据将会通过 `ValueState.update(value)` 来更新状态：
 
 {% highlight java %}
-stream.keyBy(0).asQueryableState("query-name")
+stream.keyBy(value -> value.f0).asQueryableState("query-name")
 {% endhighlight %}
 
 这个行为类似于 Scala API 中的 `flatMapWithState`。
@@ -149,7 +144,7 @@ descriptor.setQueryable("query-name"); // queryable state name
 {% endhighlight %}
 </div>
 
-关于依赖的更多信息, 可以参考如何 [配置 Flink 项目]({{ site.baseurl }}/zh/getting-started/project-setup/dependencies.html).
+关于依赖的更多信息, 可以参考如何 [配置 Flink 项目]({{ site.baseurl }}/zh/dev/project-configuration.html).
 
 `QueryableStateClient` 将提交你的请求到内部代理，代理会处理请求并返回结果。客户端的初始化只需要提供一个有效的 `TaskManager` 主机名
 (每个 task manager 上都运行着一个 queryable state 代理)，以及代理监听的端口号。关于如何配置代理以及端口号可以参考 [Configuration Section](#configuration).

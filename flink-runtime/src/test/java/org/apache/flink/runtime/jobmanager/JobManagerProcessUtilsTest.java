@@ -23,14 +23,16 @@ import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.runtime.util.config.memory.ProcessMemoryUtilsTestBase;
-
 import org.apache.flink.runtime.util.config.memory.jobmanager.JobManagerFlinkMemoryUtils;
 import org.apache.flink.testutils.logging.TestLoggerResource;
+
 import org.hamcrest.MatcherAssert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.slf4j.event.Level;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.Consumer;
 
 import static org.apache.flink.runtime.jobmanager.JobManagerProcessUtils.JM_LEGACY_HEAP_OPTIONS;
@@ -38,6 +40,8 @@ import static org.apache.flink.runtime.jobmanager.JobManagerProcessUtils.JM_PROC
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.hasItem;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.collection.IsArrayWithSize.arrayWithSize;
+import static org.hamcrest.collection.IsMapContaining.hasKey;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.fail;
 
@@ -50,10 +54,55 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 	private static final MemorySize TOTAL_PROCESS_MEM_SIZE = MemorySize.parse("1536m");
 
 	@Rule
-	public final TestLoggerResource testLoggerResource = new TestLoggerResource(JobManagerFlinkMemoryUtils.class, Level.WARN);
+	public final TestLoggerResource testLoggerResource = new TestLoggerResource(JobManagerFlinkMemoryUtils.class, Level.INFO);
 
 	public JobManagerProcessUtilsTest() {
 		super(JM_PROCESS_MEMORY_OPTIONS, JM_LEGACY_HEAP_OPTIONS, JobManagerOptions.TOTAL_PROCESS_MEMORY);
+	}
+
+	@Test
+	public void testGenerateDynamicConfigurations() {
+		Configuration config = new Configuration();
+		config.set(JobManagerOptions.JVM_HEAP_MEMORY, MemorySize.parse("1m"));
+		config.set(JobManagerOptions.OFF_HEAP_MEMORY, MemorySize.parse("2m"));
+		config.set(JobManagerOptions.JVM_METASPACE, MemorySize.parse("3m"));
+		config.set(JobManagerOptions.JVM_OVERHEAD_MIN, MemorySize.parse("4m"));
+		config.set(JobManagerOptions.JVM_OVERHEAD_MAX, MemorySize.parse("5m"));
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
+
+		String dynamicConfigsStr = JobManagerProcessUtils.generateDynamicConfigsStr(jobManagerProcessSpec);
+		Map<String, String> configs = parseAndAssertJobManagerResourceDynamicConfig(dynamicConfigsStr);
+
+		assertThat(MemorySize.parse(configs.get(JobManagerOptions.JVM_HEAP_MEMORY.key())), is(jobManagerProcessSpec.getJvmHeapMemorySize()));
+		assertThat(MemorySize.parse(configs.get(JobManagerOptions.OFF_HEAP_MEMORY.key())), is(jobManagerProcessSpec.getJvmDirectMemorySize()));
+		assertThat(MemorySize.parse(configs.get(JobManagerOptions.JVM_METASPACE.key())), is(jobManagerProcessSpec.getJvmMetaspaceSize()));
+		assertThat(MemorySize.parse(configs.get(JobManagerOptions.JVM_OVERHEAD_MIN.key())), is(jobManagerProcessSpec.getJvmOverheadSize()));
+		assertThat(MemorySize.parse(configs.get(JobManagerOptions.JVM_OVERHEAD_MAX.key())), is(jobManagerProcessSpec.getJvmOverheadSize()));
+	}
+
+	private static Map<String, String> parseAndAssertJobManagerResourceDynamicConfig(String dynamicParameterStr) {
+		Map<String, String> config = new HashMap<>();
+		String[] dynamicParameterTokens = dynamicParameterStr.split(" ");
+
+		assertThat(dynamicParameterTokens.length % 2, is(0));
+		for (int i = 0; i < dynamicParameterTokens.length; ++i) {
+			String configStr = dynamicParameterTokens[i];
+			if (i % 2 == 0) {
+				assertThat(configStr, is("-D"));
+			} else {
+				String[] configEntry = configStr.split("=");
+				assertThat(configEntry, arrayWithSize(2));
+				config.put(configEntry[0], configEntry[1]);
+			}
+		}
+
+		assertThat(config, hasKey(JobManagerOptions.JVM_HEAP_MEMORY.key()));
+		assertThat(config, hasKey(JobManagerOptions.OFF_HEAP_MEMORY.key()));
+		assertThat(config, hasKey(JobManagerOptions.JVM_METASPACE.key()));
+		assertThat(config, hasKey(JobManagerOptions.JVM_OVERHEAD_MIN.key()));
+		assertThat(config, hasKey(JobManagerOptions.JVM_OVERHEAD_MAX.key()));
+
+		return config;
 	}
 
 	@Test
@@ -63,8 +112,8 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 		Configuration conf = new Configuration();
 		conf.set(JobManagerOptions.JVM_HEAP_MEMORY, jvmHeapSize);
 
-		JobManagerProcessSpec JobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(conf);
-		assertThat(JobManagerProcessSpec.getJvmHeapMemorySize(), is(jvmHeapSize));
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(conf);
+		assertThat(jobManagerProcessSpec.getJvmHeapMemorySize(), is(jvmHeapSize));
 	}
 
 	@Test
@@ -81,27 +130,6 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 				"The configured or derived JVM heap memory size (%s) is less than its recommended minimum value (%s)",
 				jvmHeapMemory.toHumanReadableString(),
 				JobManagerOptions.MIN_JVM_HEAP_SIZE.toHumanReadableString()))));
-	}
-
-	@Test
-	public void testLogFailureOfJobStoreCacheSizeVerification() {
-		MemorySize jvmHeapMemory = MemorySize.parse("150m");
-		MemorySize jobStoreCacheSize = MemorySize.parse("200m");
-
-		Configuration conf = new Configuration();
-		conf.set(JobManagerOptions.JVM_HEAP_MEMORY, jvmHeapMemory);
-		conf.set(JobManagerOptions.JOB_STORE_CACHE_SIZE, jobStoreCacheSize.getBytes());
-
-		JobManagerProcessUtils.processSpecFromConfig(conf);
-		MatcherAssert.assertThat(
-			testLoggerResource.getMessages(),
-			hasItem(containsString(String.format(
-				"The configured or derived JVM heap memory size (%s: %s) is less than the configured or default size " +
-					"of the job store cache (%s: %s)",
-				JobManagerOptions.JVM_HEAP_MEMORY.key(),
-				jvmHeapMemory.toHumanReadableString(),
-				JobManagerOptions.JOB_STORE_CACHE_SIZE.key(),
-				jobStoreCacheSize.toHumanReadableString()))));
 	}
 
 	@Test
@@ -128,6 +156,58 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 		conf.set(JobManagerOptions.OFF_HEAP_MEMORY, offHeapMemory);
 
 		validateFail(conf);
+	}
+
+	@Test
+	public void testJvmHeapExceedsTotalFlinkMemoryFailure() {
+		MemorySize totalFlinkMemory = MemorySize.ofMebiBytes(100);
+		MemorySize jvmHeap = MemorySize.ofMebiBytes(150);
+
+		Configuration conf = new Configuration();
+		conf.set(JobManagerOptions.TOTAL_FLINK_MEMORY, totalFlinkMemory);
+		conf.set(JobManagerOptions.JVM_HEAP_MEMORY, jvmHeap);
+
+		validateFail(conf);
+	}
+
+	@Test
+	public void testOffHeapMemoryDerivedFromJvmHeapAndTotalFlinkMemory() {
+		MemorySize jvmHeap = MemorySize.ofMebiBytes(150);
+		MemorySize defaultOffHeap = JobManagerOptions.OFF_HEAP_MEMORY.defaultValue();
+		MemorySize expectedOffHeap = MemorySize.ofMebiBytes(100).add(defaultOffHeap);
+		MemorySize totalFlinkMemory = jvmHeap.add(expectedOffHeap);
+
+		Configuration conf = new Configuration();
+		conf.set(JobManagerOptions.TOTAL_FLINK_MEMORY, totalFlinkMemory);
+		conf.set(JobManagerOptions.JVM_HEAP_MEMORY, jvmHeap);
+
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(conf);
+		assertThat(jobManagerProcessSpec.getJvmDirectMemorySize(), is(expectedOffHeap));
+		MatcherAssert.assertThat(
+			testLoggerResource.getMessages(),
+			hasItem(containsString(String.format(
+				"The Off-Heap Memory size (%s) is derived the configured Total Flink Memory size (%s) minus " +
+					"the configured JVM Heap Memory size (%s). The default Off-Heap Memory size (%s) is ignored.",
+				expectedOffHeap.toHumanReadableString(),
+				totalFlinkMemory.toHumanReadableString(),
+				jvmHeap.toHumanReadableString(),
+				defaultOffHeap.toHumanReadableString()))));
+	}
+
+	@Test
+	public void testDeriveFromRequiredFineGrainedOptions() {
+		MemorySize jvmHeap = MemorySize.ofMebiBytes(150);
+		MemorySize offHeap = MemorySize.ofMebiBytes(50);
+		MemorySize totalFlinkMemory = MemorySize.ofMebiBytes(200);
+		MemorySize expectedOffHeap = MemorySize.ofMebiBytes(50);
+
+		Configuration conf = new Configuration();
+		conf.set(JobManagerOptions.TOTAL_FLINK_MEMORY, totalFlinkMemory);
+		conf.set(JobManagerOptions.OFF_HEAP_MEMORY, offHeap);
+		conf.set(JobManagerOptions.JVM_HEAP_MEMORY, jvmHeap);
+
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(conf);
+		assertThat(jobManagerProcessSpec.getJvmDirectMemorySize(), is(expectedOffHeap));
 	}
 
 	@Override
@@ -171,9 +251,9 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 		log.info("Validating in configuration with explicit jvm heap.");
 		Configuration config = configWithExplicitJvmHeap();
 		config.addAll(customConfig);
-		JobManagerProcessSpec JobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
-		assertThat(JobManagerProcessSpec.getJvmHeapMemorySize(), is(JVM_HEAP_SIZE));
-		validateFunc.accept(JobManagerProcessSpec);
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
+		assertThat(jobManagerProcessSpec.getJvmHeapMemorySize(), is(JVM_HEAP_SIZE));
+		validateFunc.accept(jobManagerProcessSpec);
 	}
 
 	private void validateFailInConfigWithExplicitJvmHeap(Configuration customConfig) {
@@ -188,9 +268,9 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 		log.info("Validating in configuration with explicit total flink memory size.");
 		Configuration config = configWithExplicitTotalFlinkMem();
 		config.addAll(customConfig);
-		JobManagerProcessSpec JobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
-		assertThat(JobManagerProcessSpec.getTotalFlinkMemorySize(), is(TOTAL_FLINK_MEM_SIZE));
-		validateFunc.accept(JobManagerProcessSpec);
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
+		assertThat(jobManagerProcessSpec.getTotalFlinkMemorySize(), is(TOTAL_FLINK_MEM_SIZE));
+		validateFunc.accept(jobManagerProcessSpec);
 	}
 
 	private void validateFailInConfigWithExplicitTotalFlinkMem(Configuration customConfig) {
@@ -206,10 +286,10 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 		log.info("Validating in configuration with explicit total flink and jvm heap memory size.");
 		Configuration config = configWithExplicitTotalFlinkAndJvmHeapMem();
 		config.addAll(customConfig);
-		JobManagerProcessSpec JobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
-		assertThat(JobManagerProcessSpec.getTotalFlinkMemorySize(), is(TOTAL_FLINK_MEM_SIZE));
-		assertThat(JobManagerProcessSpec.getJvmHeapMemorySize(), is(JVM_HEAP_SIZE));
-		validateFunc.accept(JobManagerProcessSpec);
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
+		assertThat(jobManagerProcessSpec.getTotalFlinkMemorySize(), is(TOTAL_FLINK_MEM_SIZE));
+		assertThat(jobManagerProcessSpec.getJvmHeapMemorySize(), is(JVM_HEAP_SIZE));
+		validateFunc.accept(jobManagerProcessSpec);
 	}
 
 	private void validateFailInConfigWithExplicitTotalFlinkAndJvmHeapMem(Configuration customConfig) {
@@ -224,9 +304,9 @@ public class JobManagerProcessUtilsTest extends ProcessMemoryUtilsTestBase<JobMa
 		log.info("Validating in configuration with explicit total process memory size.");
 		Configuration config = configWithExplicitTotalProcessMem();
 		config.addAll(customConfig);
-		JobManagerProcessSpec JobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
-		assertThat(JobManagerProcessSpec.getTotalProcessMemorySize(), is(TOTAL_PROCESS_MEM_SIZE));
-		validateFunc.accept(JobManagerProcessSpec);
+		JobManagerProcessSpec jobManagerProcessSpec = JobManagerProcessUtils.processSpecFromConfig(config);
+		assertThat(jobManagerProcessSpec.getTotalProcessMemorySize(), is(TOTAL_PROCESS_MEM_SIZE));
+		validateFunc.accept(jobManagerProcessSpec);
 	}
 
 	private void validateFailInConfigWithExplicitTotalProcessMem(Configuration customConfig) {

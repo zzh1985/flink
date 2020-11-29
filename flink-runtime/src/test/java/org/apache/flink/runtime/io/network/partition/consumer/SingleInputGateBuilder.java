@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.core.memory.MemorySegmentProvider;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
 import org.apache.flink.runtime.io.network.buffer.BufferDecompressor;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
@@ -29,7 +30,11 @@ import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.taskmanager.NettyShuffleEnvironmentConfiguration;
 import org.apache.flink.util.function.SupplierWithException;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.function.BiFunction;
+import java.util.stream.IntStream;
 
 /**
  * Utility class to encapsulate the logic of building a {@link SingleInputGate} instance.
@@ -39,6 +44,8 @@ public class SingleInputGateBuilder {
 	public static final PartitionProducerStateProvider NO_OP_PRODUCER_CHECKER = (dsid, id, consumer) -> {};
 
 	private final IntermediateDataSetID intermediateDataSetID = new IntermediateDataSetID();
+
+	private final int bufferSize = 4096;
 
 	private ResultPartitionType partitionType = ResultPartitionType.PIPELINED;
 
@@ -53,6 +60,11 @@ public class SingleInputGateBuilder {
 	private BufferDecompressor bufferDecompressor = null;
 
 	private MemorySegmentProvider segmentProvider = InputChannelTestUtils.StubMemorySegmentProvider.getInstance();
+
+	private ChannelStateWriter channelStateWriter = ChannelStateWriter.NO_OP;
+
+	@Nullable
+	private BiFunction<InputChannelBuilder, SingleInputGate, InputChannel> channelFactory = null;
 
 	private SupplierWithException<BufferPool, IOException> bufferPoolFactory = () -> {
 		throw new UnsupportedOperationException();
@@ -112,8 +124,22 @@ public class SingleInputGateBuilder {
 		return this;
 	}
 
+	/**
+	 * Adds automatic initialization of all channels with the given factory.
+	 */
+	public SingleInputGateBuilder setChannelFactory(
+			BiFunction<InputChannelBuilder, SingleInputGate, InputChannel> channelFactory) {
+		this.channelFactory = channelFactory;
+		return this;
+	}
+
+	public SingleInputGateBuilder setChannelStateWriter(ChannelStateWriter channelStateWriter) {
+		this.channelStateWriter = channelStateWriter;
+		return this;
+	}
+
 	public SingleInputGate build() {
-		return new SingleInputGate(
+		SingleInputGate gate = new SingleInputGate(
 			"Single Input Gate",
 			gateIndex,
 			intermediateDataSetID,
@@ -123,6 +149,13 @@ public class SingleInputGateBuilder {
 			partitionProducerStateProvider,
 			bufferPoolFactory,
 			bufferDecompressor,
-			segmentProvider);
+			segmentProvider,
+			bufferSize);
+		if (channelFactory != null) {
+			gate.setInputChannels(IntStream.range(0, numberOfChannels)
+				.mapToObj(index -> channelFactory.apply(InputChannelBuilder.newBuilder().setStateWriter(channelStateWriter).setChannelIndex(index), gate))
+				.toArray(InputChannel[]::new));
+		}
+		return gate;
 	}
 }

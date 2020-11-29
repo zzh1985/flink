@@ -2,7 +2,7 @@
 title: "HBase SQL Connector"
 nav-title: HBase
 nav-parent_id: sql-connectors
-nav-pos: 9
+nav-pos: 8
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -33,21 +33,17 @@ under the License.
 
 The HBase connector allows for reading from and writing to an HBase cluster. This document describes how to setup the HBase Connector to run SQL queries against HBase.
 
-The connector can operate in upsert mode for exchange changelog messages with the external system using a primary key defined on the DDL. But the primary key can only be defined on the HBase rowkey field. If the PRIMARY KEY clause is not declared, the HBase connector will take rowkey as the primary key by default.
-
-<span class="label label-danger">Attention</span> HBase as a Lookup Source does not use any cache, data is always queried directly through the HBase client.
+HBase always works in upsert mode for exchange changelog messages with the external system using a primary key defined on the DDL. The primary key must be defined on the HBase rowkey field (rowkey field must be declared). If the PRIMARY KEY clause is not declared, the HBase connector will take rowkey as the primary key by default.
 
 Dependencies
 ------------
 
-In order to setup the HBase connector, the following table provide dependency information for both projects using a build automation tool (such as Maven or SBT) and SQL Client with SQL JAR bundles.
+{% assign connector = site.data.sql-connectors['hbase'] %} 
+{% include sql-connector-download-table.html 
+    connector=connector
+%}
 
-| HBase Version       | Maven dependency                                          | SQL Client JAR         |
-| :------------------ | :-------------------------------------------------------- | :----------------------|
-| 1.4.x               | `flink-connector-hbase{{site.scala_version_suffix}}`      | {% if site.is_stable %} [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-hbase{{site.scala_version_suffix}}/{{site.version}}/flink-connector-hbase{{site.scala_version_suffix}}-{{site.version}}.jar) {% else %} Only available for stable releases {% endif %}|
-
-
-How to create an HBase table
+How to use HBase table
 ----------------
 
 All the column families in HBase table must be declared as ROW type, the field name maps to the column family name, and the nested field names map to the column qualifier names. There is no need to declare all the families and qualifiers in the schema, users can declare what’s used in the query. Except the ROW type fields, the single atomic type field (e.g. STRING, BIGINT) will be recognized as HBase rowkey. The rowkey field can be arbitrary name, but should be quoted using backticks if it is a reserved keyword.
@@ -55,6 +51,7 @@ All the column families in HBase table must be declared as ROW type, the field n
 <div class="codetabs" markdown="1">
 <div data-lang="SQL" markdown="1">
 {% highlight sql %}
+-- register the HBase table 'mytable' in Flink SQL
 CREATE TABLE hTable (
  rowkey INT,
  family1 ROW<q1 INT>,
@@ -64,8 +61,21 @@ CREATE TABLE hTable (
 ) WITH (
  'connector' = 'hbase-1.4',
  'table-name' = 'mytable',
- 'zookeeper.quorum' = 'localhost:2121'
-)
+ 'zookeeper.quorum' = 'localhost:2181'
+);
+
+-- use ROW(...) construction function construct column families and write data into the HBase table.
+-- assuming the schema of "T" is [rowkey, f1q1, f2q2, f2q3, f3q4, f3q5, f3q6]
+INSERT INTO hTable
+SELECT rowkey, ROW(f1q1), ROW(f2q2, f2q3), ROW(f3q4, f3q5, f3q6) FROM T;
+
+-- scan data from the HBase table
+SELECT rowkey, family1, family3.q4, family3.q6 FROM hTable;
+
+-- temporal join the HBase table as a dimension table
+SELECT * FROM myTopic
+LEFT JOIN hTable FOR SYSTEM_TIME AS OF myTopic.proctime
+ON myTopic.key = hTable.rowkey;
 {% endhighlight %}
 </div>
 </div>
@@ -89,7 +99,12 @@ Connector Options
       <td>required</td>
       <td style="word-wrap: break-word;">(none)</td>
       <td>String</td>
-      <td>Specify what connector to use, here should be 'hbase-1.4'.</td>
+      <td>Specify what connector to use, valid values are:
+        <ul>
+            <li><code>hbase-1.4</code>: connect to HBase 1.4.x cluster</li>
+            <li><code>hbase-2.2</code>: connect to HBase 2.2.x cluster</li>
+        </ul>
+      </td>
     </tr>
     <tr>
       <td><h5>table-name</h5></td>
@@ -110,7 +125,7 @@ Connector Options
       <td>optional</td>
       <td style="word-wrap: break-word;">/hbase</td>
       <td>String</td>
-      <td>The root dir in Zookeeper for HBase cluster</td>
+      <td>The root dir in Zookeeper for HBase cluster.</td>
     </tr>
     <tr>
       <td><h5>null-string-literal</h5></td>
@@ -126,26 +141,36 @@ Connector Options
       <td>MemorySize</td>
       <td>Writing option, maximum size in memory of buffered rows for each writing request.
       This can improve performance for writing data to HBase database, but may increase the latency.
+      Can be set to <code>'0'</code> to disable it.
       </td>
     </tr>
     <tr>
       <td><h5>sink.buffer-flush.max-rows</h5></td>
       <td>optional</td>
-      <td style="word-wrap: break-word;">(none)</td>
+      <td style="word-wrap: break-word;">1000</td>
       <td>Integer</td>
       <td>Writing option, maximum number of rows to buffer for each writing request.
       This can improve performance for writing data to HBase database, but may increase the latency.
-      No default value, which means the default flushing is not depends on the number of buffered rows
+      Can be set to <code>'0'</code> to disable it.
       </td>
     </tr>
     <tr>
       <td><h5>sink.buffer-flush.interval</h5></td>
       <td>optional</td>
-      <td style="word-wrap: break-word;">(none)</td>
+      <td style="word-wrap: break-word;">1s</td>
       <td>Duration</td>
-      <td>Writing option, the interval to flush buffered rows.
-      No default value, which means no asynchronous flush thread will be scheduled. Examples: '1s', '5 s'.
+      <td>Writing option, the interval to flush any buffered rows.
+      This can improve performance for writing data to HBase database, but may increase the latency.
+      Can be set to <code>'0'</code> to disable it. Note, both <code>'sink.buffer-flush.max-size'</code> and <code>'sink.buffer-flush.max-rows'</code>
+      can be set to <code>'0'</code> with the flush interval set allowing for complete async processing of buffered actions.
       </td>
+    </tr>
+    <tr>
+      <td><h5>sink.parallelism</h5></td>
+      <td>optional</td>
+      <td style="word-wrap: break-word;">(none)</td>
+      <td>Integer</td>
+      <td>Defines the parallelism of the HBase sink operator. By default, the parallelism is determined by the framework using the same parallelism of the upstream chained operator.</td>
     </tr>
     </tbody>
 </table>
@@ -166,13 +191,13 @@ The data type mappings are as follows:
 <table class="table table-bordered">
     <thead>
       <tr>
-        <th class="text-left">Flink Data Type</th>
-        <th class="text-center">HBase conversion</th>
+        <th class="text-left">Flink SQL type</th>
+        <th class="text-left">HBase conversion</th>
       </tr>
     </thead>
     <tbody>
     <tr>
-      <td>CHAR / VARCHAR / STRING</td>
+      <td><code>CHAR / VARCHAR / STRING</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(String s)
@@ -181,7 +206,7 @@ String toString(byte[] b)
       </td>
     </tr>
     <tr>
-      <td>BOOLEAN</td>
+      <td><code>BOOLEAN</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(boolean b)
@@ -190,11 +215,11 @@ boolean toBoolean(byte[] b)
       </td>
     </tr>
     <tr>
-      <td>BINARY / VARBINARY</td>
+      <td><code>BINARY / VARBINARY</code></td>
       <td>Returns <code>byte[]</code> as is.</td>
     </tr>
     <tr>
-      <td>DECIMAL</td>
+      <td><code>DECIMAL</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(BigDecimal v)
@@ -203,7 +228,7 @@ BigDecimal toBigDecimal(byte[] b)
       </td>
     </tr>
     <tr>
-      <td>TINYINT</td>
+      <td><code>TINYINT</code></td>
       <td>
 {% highlight java %}
 new byte[] { val }
@@ -212,7 +237,7 @@ bytes[0] // returns first and only byte from bytes
       </td>
     </tr>
     <tr>
-      <td>SMALLINT</td>
+      <td><code>SMALLINT</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(short val)
@@ -221,7 +246,7 @@ short toShort(byte[] bytes)
       </td>
     </tr>
     <tr>
-      <td>INT</td>
+      <td><code>INT</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(int val)
@@ -230,7 +255,7 @@ int toInt(byte[] bytes)
       </td>
     </tr>
     <tr>
-      <td>BIGINT</td>
+      <td><code>BIGINT</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(long val)
@@ -239,7 +264,7 @@ long toLong(byte[] bytes)
       </td>
     </tr>
     <tr>
-      <td>FLOAT</td>
+      <td><code>FLOAT</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(float val)
@@ -248,7 +273,7 @@ float toFloat(byte[] bytes)
       </td>
     </tr>
     <tr>
-      <td>DOUBLE</td>
+      <td><code>DOUBLE</code></td>
       <td>
 {% highlight java %}
 byte[] toBytes(double val)
@@ -257,28 +282,30 @@ double toDouble(byte[] bytes)
       </td>
     </tr>
     <tr>
-      <td>DATE</td>
+      <td><code>DATE</code></td>
       <td>Stores the number of days since epoch as int value.</td>
     </tr>
     <tr>
-      <td>TIME</td>
+      <td><code>TIME</code></td>
       <td>Stores the number of milliseconds of the day as int value.</td>
     </tr>
     <tr>
-      <td>TIMESTAMP</td>
+      <td><code>TIMESTAMP</code></td>
       <td>Stores the milliseconds since epoch as long value.</td>
     </tr>
     <tr>
-      <td>ARRAY</td>
+      <td><code>ARRAY</code></td>
       <td>Not supported</td>
     </tr>
     <tr>
-      <td>MAP / MULTISET</td>
+      <td><code>MAP / MULTISET</code></td>
       <td>Not supported</td>
     </tr>
     <tr>
-      <td>ROW</td>
+      <td><code>ROW</code></td>
       <td>Not supported</td>
     </tr>
     </tbody>
 </table>
+
+{% top %}

@@ -26,14 +26,18 @@ import org.apache.flink.table.operations.ExplainOperation;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.QueryOperation;
 import org.apache.flink.table.operations.ShowCatalogsOperation;
+import org.apache.flink.table.operations.ShowCurrentCatalogOperation;
+import org.apache.flink.table.operations.ShowCurrentDatabaseOperation;
 import org.apache.flink.table.operations.ShowDatabasesOperation;
 import org.apache.flink.table.operations.ShowFunctionsOperation;
+import org.apache.flink.table.operations.ShowPartitionsOperation;
 import org.apache.flink.table.operations.ShowTablesOperation;
 import org.apache.flink.table.operations.UseCatalogOperation;
 import org.apache.flink.table.operations.UseDatabaseOperation;
 import org.apache.flink.table.operations.ddl.AlterCatalogFunctionOperation;
 import org.apache.flink.table.operations.ddl.AlterDatabaseOperation;
 import org.apache.flink.table.operations.ddl.AlterTableOperation;
+import org.apache.flink.table.operations.ddl.AlterViewOperation;
 import org.apache.flink.table.operations.ddl.CreateCatalogFunctionOperation;
 import org.apache.flink.table.operations.ddl.CreateCatalogOperation;
 import org.apache.flink.table.operations.ddl.CreateDatabaseOperation;
@@ -116,12 +120,10 @@ public final class SqlCommandParser {
 			cmd = SqlCommand.ALTER_TABLE;
 		} else if (operation instanceof CreateViewOperation) {
 			cmd = SqlCommand.CREATE_VIEW;
-			CreateViewOperation op = (CreateViewOperation) operation;
-			operands = new String[] { op.getViewIdentifier().asSerializableString(),
-					op.getCatalogView().getOriginalQuery() };
 		} else if (operation instanceof DropViewOperation) {
 			cmd = SqlCommand.DROP_VIEW;
-			operands = new String[] { ((DropViewOperation) operation).getViewIdentifier().asSerializableString() };
+		} else if (operation instanceof AlterViewOperation) {
+			cmd = SqlCommand.ALTER_VIEW;
 		} else if (operation instanceof CreateDatabaseOperation) {
 			cmd = SqlCommand.CREATE_DATABASE;
 		} else if (operation instanceof DropDatabaseOperation) {
@@ -141,8 +143,14 @@ public final class SqlCommandParser {
 		} else if (operation instanceof ShowCatalogsOperation) {
 			cmd = SqlCommand.SHOW_CATALOGS;
 			operands = new String[0];
+		} else if (operation instanceof ShowCurrentCatalogOperation) {
+			cmd = SqlCommand.SHOW_CURRENT_CATALOG;
+			operands = new String[0];
 		} else if (operation instanceof ShowDatabasesOperation) {
 			cmd = SqlCommand.SHOW_DATABASES;
+			operands = new String[0];
+		} else if (operation instanceof ShowCurrentDatabaseOperation) {
+			cmd = SqlCommand.SHOW_CURRENT_DATABASE;
 			operands = new String[0];
 		} else if (operation instanceof ShowTablesOperation) {
 			cmd = SqlCommand.SHOW_TABLES;
@@ -150,6 +158,8 @@ public final class SqlCommandParser {
 		} else if (operation instanceof ShowFunctionsOperation) {
 			cmd = SqlCommand.SHOW_FUNCTIONS;
 			operands = new String[0];
+		} else if (operation instanceof ShowPartitionsOperation) {
+			cmd = SqlCommand.SHOW_PARTITIONS;
 		} else if (operation instanceof CreateCatalogFunctionOperation ||
 				operation instanceof CreateTempSystemFunctionOperation) {
 			cmd = SqlCommand.CREATE_FUNCTION;
@@ -226,7 +236,11 @@ public final class SqlCommandParser {
 
 		SHOW_CATALOGS,
 
+		SHOW_CURRENT_CATALOG,
+
 		SHOW_DATABASES,
+
+		SHOW_CURRENT_DATABASE,
 
 		SHOW_TABLES,
 
@@ -236,6 +250,8 @@ public final class SqlCommandParser {
 		SHOW_MODULES(
 			"SHOW\\s+MODULES",
 			NO_OPERANDS),
+
+		SHOW_PARTITIONS,
 
 		USE_CATALOG,
 
@@ -276,6 +292,8 @@ public final class SqlCommandParser {
 		CREATE_VIEW,
 
 		DROP_VIEW,
+
+		ALTER_VIEW,
 
 		CREATE_FUNCTION,
 

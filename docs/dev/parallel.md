@@ -54,8 +54,8 @@ final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEn
 DataStream<String> text = [...]
 DataStream<Tuple2<String, Integer>> wordCounts = text
     .flatMap(new LineSplitter())
-    .keyBy(0)
-    .timeWindow(Time.seconds(5))
+    .keyBy(value -> value.f0)
+    .window(TumblingEventTimeWindows.of(Time.seconds(5)))
     .sum(1).setParallelism(5);
 
 wordCounts.print();
@@ -70,8 +70,8 @@ val env = StreamExecutionEnvironment.getExecutionEnvironment
 val text = [...]
 val wordCounts = text
     .flatMap{ _.split(" ") map { (_, 1) } }
-    .keyBy(0)
-    .timeWindow(Time.seconds(5))
+    .keyBy(_._1)
+    .window(TumblingEventTimeWindows.of(Time.seconds(5)))
     .sum(1).setParallelism(5)
 wordCounts.print()
 
@@ -113,8 +113,8 @@ env.setParallelism(3)
 val text = [...]
 val wordCounts = text
     .flatMap{ _.split(" ") map { (_, 1) } }
-    .keyBy(0)
-    .timeWindow(Time.seconds(5))
+    .keyBy(_._1)
+    .window(TumblingEventTimeWindows.of(Time.seconds(5)))
     .sum(1)
 wordCounts.print()
 
@@ -181,7 +181,7 @@ try {
 
 A system-wide default parallelism for all execution environments can be defined by setting the
 `parallelism.default` property in `./conf/flink-conf.yaml`. See the
-[Configuration]({{ site.baseurl }}/ops/config.html) documentation for details.
+[Configuration]({{ site.baseurl }}/deployment/config.html) documentation for details.
 
 ## Setting the Maximum Parallelism
 

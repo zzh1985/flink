@@ -24,6 +24,8 @@ CONTAINER_SCRIPTS=${END_TO_END_DIR}/test-scripts/container-scripts
 MINIKUBE_START_RETRIES=3
 MINIKUBE_START_BACKOFF=5
 RESULT_HASH="e682ec6622b5e83f2eb614617d5ab2cf"
+MINIKUBE_VERSION="v1.8.2"
+MINIKUBE_PATH="/usr/local/bin/minikube-$MINIKUBE_VERSION"
 
 NON_LINUX_ENV_NOTE="****** Please start/stop minikube manually in non-linux environment. ******"
 
@@ -42,15 +44,15 @@ function setup_kubernetes_for_linux {
             chmod +x kubectl && sudo mv kubectl /usr/local/bin/
     fi
     # Download minikube.
-    if ! [ -x "$(command -v minikube)" ]; then
-        echo "Installing minikube ..."
-        curl -Lo minikube https://storage.googleapis.com/minikube/releases/v1.8.2/minikube-linux-$arch && \
-            chmod +x minikube && sudo mv minikube /usr/local/bin/
+    if ! [ -x "$(command -v minikube)" ] || ! [[ $(minikube version) =~ "$MINIKUBE_VERSION" ]]; then
+        echo "Installing minikube to $MINIKUBE_PATH ..."
+        curl -Lo minikube https://storage.googleapis.com/minikube/releases/$MINIKUBE_VERSION/minikube-linux-$arch && \
+            chmod +x minikube && sudo mv minikube $MINIKUBE_PATH
     fi
 }
 
 function check_kubernetes_status {
-    minikube status
+    $MINIKUBE_PATH status
     return $?
 }
 
@@ -73,7 +75,7 @@ function start_kubernetes_if_not_running {
         # here.
         # Similarly, the kubelets are marking themself as "low disk space",
         # causing Flink to avoid this node (again, failing the test)
-        sudo CHANGE_MINIKUBE_NONE_USER=true minikube start --vm-driver=none \
+        sudo CHANGE_MINIKUBE_NONE_USER=true $MINIKUBE_PATH start --vm-driver=none \
             --extra-config=kubelet.image-gc-high-threshold=99 \
             --extra-config=kubelet.image-gc-low-threshold=98 \
             --extra-config=kubelet.minimum-container-ttl-duration=120m \
@@ -81,7 +83,7 @@ function start_kubernetes_if_not_running {
             --extra-config=kubelet.eviction-soft="memory.available<5Mi,nodefs.available<2Mi,imagefs.available<2Mi" \
             --extra-config=kubelet.eviction-soft-grace-period="memory.available=2h,nodefs.available=2h,imagefs.available=2h"
         # Fix the kubectl context, as it's often stale.
-        minikube update-context
+        $MINIKUBE_PATH update-context
     fi
 
     check_kubernetes_status
@@ -94,6 +96,9 @@ function start_kubernetes {
             echo "$NON_LINUX_ENV_NOTE"
             exit 1
         fi
+        # Mount Flink dist into minikube virtual machine because we need to mount hostPath as usrlib
+        minikube mount $FLINK_DIR:$FLINK_DIR &
+        export minikube_mount_pid=$!
     else
         setup_kubernetes_for_linux
         if ! retry_times ${MINIKUBE_START_RETRIES} ${MINIKUBE_START_BACKOFF} start_kubernetes_if_not_running; then
@@ -101,15 +106,16 @@ function start_kubernetes {
             exit 1
         fi
     fi
-    eval $(minikube docker-env)
+    eval $($MINIKUBE_PATH docker-env)
 }
 
 function stop_kubernetes {
     if [[ "${OS_TYPE}" != "linux" ]]; then
         echo "$NON_LINUX_ENV_NOTE"
+        kill $minikube_mount_pid 2> /dev/null
     else
         echo "Stopping minikube ..."
-        stop_command="sudo minikube stop"
+        stop_command="sudo $MINIKUBE_PATH stop"
         if ! retry_times ${MINIKUBE_START_RETRIES} ${MINIKUBE_START_BACKOFF} "${stop_command}"; then
             echo "Could not stop minikube. Aborting..."
             exit 1
@@ -139,10 +145,7 @@ function wait_rest_endpoint_up_k8s {
   # wait at most 30 seconds until the endpoint is up
   local TIMEOUT=30
   for i in $(seq 1 ${TIMEOUT}); do
-    QUERY_RESULT=$(kubectl logs $jm_pod_name 2> /dev/null)
-
-    # ensure the response adapts with the successful regex
-    if [[ ${QUERY_RESULT} =~ ${successful_response_regex} ]]; then
+    if check_logs_output $jm_pod_name $successful_response_regex; then
       echo "REST endpoint is up."
       return
     fi
@@ -152,6 +155,18 @@ function wait_rest_endpoint_up_k8s {
   done
   echo "REST endpoint has not started within a timeout of ${TIMEOUT} sec"
   exit 1
+}
+
+function check_logs_output {
+  local pod_name=$1
+  local successful_response_regex=$2
+  LOG_CONTENT=$(kubectl logs $pod_name 2> /dev/null)
+
+  # ensure the log content adapts with the successful regex
+  if [[ ${LOG_CONTENT} =~ ${successful_response_regex} ]]; then
+    return 0
+  fi
+  return 1
 }
 
 function cleanup {
@@ -173,6 +188,14 @@ appender.console.type = CONSOLE
 appender.console.layout.type = PatternLayout
 appender.console.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %-60c %x - %m%n
 END
+}
+
+function get_host_machine_address {
+    if [[ "${OS_TYPE}" != "linux" ]]; then
+        echo $(minikube ssh "route -n | grep ^0.0.0.0 | awk '{ print \$2 }' | tr -d '[:space:]'")
+    else
+        echo "localhost"
+    fi
 }
 
 on_exit cleanup

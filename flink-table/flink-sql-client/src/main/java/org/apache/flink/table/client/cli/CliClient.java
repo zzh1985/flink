@@ -20,14 +20,14 @@ package org.apache.flink.table.client.cli;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.table.api.TableResult;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.client.SqlClientException;
 import org.apache.flink.table.client.cli.SqlCommandParser.SqlCommandCall;
-import org.apache.flink.table.client.config.entries.ViewEntry;
 import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
 import org.apache.flink.table.client.gateway.SqlExecutionException;
+import org.apache.flink.table.utils.PrintUtils;
+import org.apache.flink.util.CollectionUtil;
 
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -53,11 +53,14 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * SQL CLI client.
  */
-public class CliClient {
+public class CliClient implements AutoCloseable {
 
 	private static final Logger LOG = LoggerFactory.getLogger(CliClient.class);
 
@@ -283,8 +286,14 @@ public class CliClient {
 			case SHOW_CATALOGS:
 				callShowCatalogs();
 				break;
+			case SHOW_CURRENT_CATALOG:
+				callShowCurrentCatalog();
+				break;
 			case SHOW_DATABASES:
 				callShowDatabases();
+				break;
+			case SHOW_CURRENT_DATABASE:
+				callShowCurrentDatabase();
 				break;
 			case SHOW_TABLES:
 				callShowTables();
@@ -294,6 +303,9 @@ public class CliClient {
 				break;
 			case SHOW_MODULES:
 				callShowModules();
+				break;
+			case SHOW_PARTITIONS:
+				callShowPartitions(cmdCall);
 				break;
 			case USE_CATALOG:
 				callUseCatalog(cmdCall);
@@ -322,10 +334,13 @@ public class CliClient {
 				callDdl(cmdCall.operands[0], CliStrings.MESSAGE_TABLE_REMOVED);
 				break;
 			case CREATE_VIEW:
-				callCreateView(cmdCall);
+				callDdl(cmdCall.operands[0], CliStrings.MESSAGE_VIEW_CREATED);
 				break;
 			case DROP_VIEW:
-				callDropView(cmdCall);
+				callDdl(cmdCall.operands[0], CliStrings.MESSAGE_VIEW_REMOVED);
+				break;
+			case ALTER_VIEW:
+				callDdl(cmdCall.operands[0], CliStrings.MESSAGE_ALTER_VIEW_SUCCEEDED, CliStrings.MESSAGE_ALTER_VIEW_FAILED);
 				break;
 			case CREATE_FUNCTION:
 				callDdl(cmdCall.operands[0], CliStrings.MESSAGE_FUNCTION_CREATED);
@@ -426,7 +441,7 @@ public class CliClient {
 	private void callShowCatalogs() {
 		final List<String> catalogs;
 		try {
-			catalogs = executor.listCatalogs(sessionId);
+			catalogs = getShowResult("CATALOGS");
 		} catch (SqlExecutionException e) {
 			printExecutionException(e);
 			return;
@@ -439,10 +454,22 @@ public class CliClient {
 		terminal.flush();
 	}
 
+	private void callShowCurrentCatalog() {
+		String currentCatalog;
+		try {
+			currentCatalog = executor.executeSql(sessionId, "SHOW CURRENT CATALOG").collect().next().toString();
+		} catch (SqlExecutionException e) {
+			printExecutionException(e);
+			return;
+		}
+		terminal.writer().println(currentCatalog);
+		terminal.flush();
+	}
+
 	private void callShowDatabases() {
 		final List<String> dbs;
 		try {
-			dbs = executor.listDatabases(sessionId);
+			dbs = getShowResult("DATABASES");
 		} catch (SqlExecutionException e) {
 			printExecutionException(e);
 			return;
@@ -455,10 +482,22 @@ public class CliClient {
 		terminal.flush();
 	}
 
+	private void callShowCurrentDatabase() {
+		String currentDatabase;
+		try {
+			currentDatabase = executor.executeSql(sessionId, "SHOW CURRENT DATABASE").collect().next().toString();
+		} catch (SqlExecutionException e) {
+			printExecutionException(e);
+			return;
+		}
+		terminal.writer().println(currentDatabase);
+		terminal.flush();
+	}
+
 	private void callShowTables() {
 		final List<String> tables;
 		try {
-			tables = executor.listTables(sessionId);
+			tables = getShowResult("TABLES");
 		} catch (SqlExecutionException e) {
 			printExecutionException(e);
 			return;
@@ -474,7 +513,7 @@ public class CliClient {
 	private void callShowFunctions() {
 		final List<String> functions;
 		try {
-			functions = executor.listFunctions(sessionId);
+			functions = getShowResult("FUNCTIONS");
 		} catch (SqlExecutionException e) {
 			printExecutionException(e);
 			return;
@@ -486,6 +525,22 @@ public class CliClient {
 			functions.forEach((v) -> terminal.writer().println(v));
 		}
 		terminal.flush();
+	}
+
+	private List<String> getShowResult(String objectToShow) {
+		TableResult tableResult = executor.executeSql(sessionId, "SHOW " + objectToShow);
+		return CollectionUtil.iteratorToList(tableResult.collect())
+				.stream()
+				.map(r -> checkNotNull(r.getField(0)).toString())
+				.collect(Collectors.toList());
+	}
+
+	private List<String> getShowResult(SqlCommandCall cmdCall) {
+		TableResult tableResult = executor.executeSql(sessionId, cmdCall.operands[0]);
+		return CollectionUtil.iteratorToList(tableResult.collect())
+			.stream()
+			.map(r -> checkNotNull(r.getField(0)).toString())
+			.collect(Collectors.toList());
 	}
 
 	private void callShowModules() {
@@ -505,9 +560,25 @@ public class CliClient {
 		terminal.flush();
 	}
 
+	private void callShowPartitions(SqlCommandCall cmdCall) {
+		final List<String> partitions;
+		try {
+			partitions = getShowResult(cmdCall);
+		} catch (SqlExecutionException e) {
+			printExecutionException(e);
+			return;
+		}
+		if (partitions.isEmpty()) {
+			terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_EMPTY).toAnsi());
+		} else {
+			partitions.forEach((v) -> terminal.writer().println(v));
+		}
+		terminal.flush();
+	}
+
 	private void callUseCatalog(SqlCommandCall cmdCall) {
 		try {
-			executor.useCatalog(sessionId, cmdCall.operands[0]);
+			executor.executeSql(sessionId, "USE CATALOG " + cmdCall.operands[0]);
 		} catch (SqlExecutionException e) {
 			printExecutionException(e);
 			return;
@@ -517,7 +588,7 @@ public class CliClient {
 
 	private void callUseDatabase(SqlCommandCall cmdCall) {
 		try {
-			executor.useDatabase(sessionId, cmdCall.operands[0]);
+			executor.executeSql(sessionId, "USE " + cmdCall.operands[0]);
 		} catch (SqlExecutionException e) {
 			printExecutionException(e);
 			return;
@@ -526,14 +597,21 @@ public class CliClient {
 	}
 
 	private void callDescribe(SqlCommandCall cmdCall) {
-		final TableSchema schema;
+		final TableResult tableResult;
 		try {
-			schema = executor.getTableSchema(sessionId, cmdCall.operands[0]);
+			tableResult = executor.executeSql(sessionId, "DESCRIBE " + cmdCall.operands[0]);
 		} catch (SqlExecutionException e) {
 			printExecutionException(e);
 			return;
 		}
-		terminal.writer().println(schema.toString());
+		PrintUtils.printAsTableauForm(
+				tableResult.getTableSchema(),
+				tableResult.collect(),
+				terminal.writer(),
+				Integer.MAX_VALUE,
+				"",
+				false,
+				false);
 		terminal.flush();
 	}
 
@@ -603,46 +681,6 @@ public class CliClient {
 			return false;
 		}
 		return true;
-	}
-
-	private void callCreateView(SqlCommandCall cmdCall) {
-		final String name = cmdCall.operands[0];
-		final String query = cmdCall.operands[1];
-
-		final ViewEntry previousView = executor.listViews(sessionId).get(name);
-		if (previousView != null) {
-			printExecutionError(CliStrings.MESSAGE_VIEW_ALREADY_EXISTS);
-			return;
-		}
-
-		try {
-			// perform and validate change
-			executor.addView(sessionId, name, query);
-			printInfo(CliStrings.MESSAGE_VIEW_CREATED);
-		} catch (SqlExecutionException e) {
-			// rollback change
-			executor.removeView(sessionId, name);
-			printExecutionException(e);
-		}
-	}
-
-	private void callDropView(SqlCommandCall cmdCall) {
-		final String name = cmdCall.operands[0];
-		final ViewEntry view = executor.listViews(sessionId).get(name);
-		if (view == null) {
-			printExecutionError(CliStrings.MESSAGE_VIEW_NOT_FOUND);
-			return;
-		}
-
-		try {
-			// perform and validate change
-			executor.removeView(sessionId, name);
-			printInfo(CliStrings.MESSAGE_VIEW_REMOVED);
-		} catch (SqlExecutionException e) {
-			// rollback change
-			executor.addView(sessionId, view.getName(), view.getQuery());
-			printExecutionException(CliStrings.MESSAGE_VIEW_NOT_REMOVED, e);
-		}
 	}
 
 	private void callSource(SqlCommandCall cmdCall) {

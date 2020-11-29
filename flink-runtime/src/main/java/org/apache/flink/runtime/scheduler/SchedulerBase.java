@@ -45,13 +45,16 @@ import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
 import org.apache.flink.runtime.executiongraph.Execution;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
+import org.apache.flink.runtime.executiongraph.ExecutionDeploymentListener;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionGraphBuilder;
 import org.apache.flink.runtime.executiongraph.ExecutionGraphException;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
+import org.apache.flink.runtime.executiongraph.ExecutionStateUpdateListener;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.executiongraph.IntermediateResult;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
+import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.executiongraph.failover.FailoverStrategy;
 import org.apache.flink.runtime.executiongraph.failover.FailoverStrategyLoader;
 import org.apache.flink.runtime.executiongraph.failover.NoOpFailoverStrategy;
@@ -69,6 +72,8 @@ import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.jobmanager.PartitionProducerDisposedException;
 import org.apache.flink.runtime.jobmanager.scheduler.CoLocationGroup;
+import org.apache.flink.runtime.jobmaster.ExecutionDeploymentTracker;
+import org.apache.flink.runtime.jobmaster.ExecutionDeploymentTrackerDeploymentListenerAdapter;
 import org.apache.flink.runtime.jobmaster.SerializedInputSplit;
 import org.apache.flink.runtime.jobmaster.slotpool.SlotProvider;
 import org.apache.flink.runtime.messages.FlinkJobNotFoundException;
@@ -94,9 +99,7 @@ import org.apache.flink.runtime.scheduler.strategy.SchedulingExecutionVertex;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingTopology;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
 import org.apache.flink.runtime.state.KeyGroupRange;
-import org.apache.flink.runtime.taskmanager.TaskExecutionState;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
-import org.apache.flink.runtime.webmonitor.WebMonitorUtils;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.FlinkRuntimeException;
@@ -140,7 +143,9 @@ public abstract class SchedulerBase implements SchedulerNG {
 
 	private final SchedulingTopology schedulingTopology;
 
-	private final InputsLocationsRetriever inputsLocationsRetriever;
+	protected final StateLocationRetriever stateLocationRetriever;
+
+	protected final InputsLocationsRetriever inputsLocationsRetriever;
 
 	private final BackPressureStatsTracker backPressureStatsTracker;
 
@@ -194,7 +199,9 @@ public abstract class SchedulerBase implements SchedulerNG {
 		final ShuffleMaster<?> shuffleMaster,
 		final JobMasterPartitionTracker partitionTracker,
 		final ExecutionVertexVersioner executionVertexVersioner,
-		final boolean legacyScheduling) throws Exception {
+		final ExecutionDeploymentTracker executionDeploymentTracker,
+		final boolean legacyScheduling,
+		long initializationTimestamp) throws Exception {
 
 		this.log = checkNotNull(log);
 		this.jobGraph = checkNotNull(jobGraph);
@@ -226,10 +233,13 @@ public abstract class SchedulerBase implements SchedulerNG {
 		this.executionVertexVersioner = checkNotNull(executionVertexVersioner);
 		this.legacyScheduling = legacyScheduling;
 
-		this.executionGraph = createAndRestoreExecutionGraph(jobManagerJobMetricGroup, checkNotNull(shuffleMaster), checkNotNull(partitionTracker));
+		this.executionGraph = createAndRestoreExecutionGraph(jobManagerJobMetricGroup, checkNotNull(shuffleMaster), checkNotNull(partitionTracker), checkNotNull(executionDeploymentTracker), initializationTimestamp);
+
 		this.schedulingTopology = executionGraph.getSchedulingTopology();
 
-		this.inputsLocationsRetriever = new ExecutionGraphToInputsLocationsRetrieverAdapter(executionGraph);
+		stateLocationRetriever =
+			executionVertexId -> getExecutionVertex(executionVertexId).getPreferredLocationBasedOnState();
+		inputsLocationsRetriever = new ExecutionGraphToInputsLocationsRetrieverAdapter(executionGraph);
 
 		this.coordinatorMap = createCoordinatorMap();
 	}
@@ -237,17 +247,18 @@ public abstract class SchedulerBase implements SchedulerNG {
 	private ExecutionGraph createAndRestoreExecutionGraph(
 		JobManagerJobMetricGroup currentJobManagerJobMetricGroup,
 		ShuffleMaster<?> shuffleMaster,
-		JobMasterPartitionTracker partitionTracker) throws Exception {
+		JobMasterPartitionTracker partitionTracker,
+		ExecutionDeploymentTracker executionDeploymentTracker,
+		long initializationTimestamp) throws Exception {
 
-		ExecutionGraph newExecutionGraph = createExecutionGraph(currentJobManagerJobMetricGroup, shuffleMaster, partitionTracker);
+		ExecutionGraph newExecutionGraph = createExecutionGraph(currentJobManagerJobMetricGroup, shuffleMaster, partitionTracker, executionDeploymentTracker, initializationTimestamp);
 
 		final CheckpointCoordinator checkpointCoordinator = newExecutionGraph.getCheckpointCoordinator();
 
 		if (checkpointCoordinator != null) {
 			// check whether we find a valid checkpoint
-			if (!checkpointCoordinator.restoreLatestCheckpointedStateToAll(
-				new HashSet<>(newExecutionGraph.getAllVertices().values()),
-				false)) {
+			if (!checkpointCoordinator.restoreInitialCheckpointIfPresent(
+					new HashSet<>(newExecutionGraph.getAllVertices().values()))) {
 
 				// check whether we can restore from a savepoint
 				tryRestoreExecutionGraphFromSavepoint(newExecutionGraph, jobGraph.getSavepointRestoreSettings());
@@ -260,7 +271,16 @@ public abstract class SchedulerBase implements SchedulerNG {
 	private ExecutionGraph createExecutionGraph(
 		JobManagerJobMetricGroup currentJobManagerJobMetricGroup,
 		ShuffleMaster<?> shuffleMaster,
-		final JobMasterPartitionTracker partitionTracker) throws JobExecutionException, JobException {
+		final JobMasterPartitionTracker partitionTracker,
+		ExecutionDeploymentTracker executionDeploymentTracker,
+		long initializationTimestamp) throws JobExecutionException, JobException {
+
+		ExecutionDeploymentListener executionDeploymentListener = new ExecutionDeploymentTrackerDeploymentListenerAdapter(executionDeploymentTracker);
+		ExecutionStateUpdateListener executionStateUpdateListener = (execution, newState) -> {
+			if (newState.isTerminal()) {
+				executionDeploymentTracker.stopTrackingDeploymentOf(execution);
+			}
+		};
 
 		final FailoverStrategy.Factory failoverStrategy = legacyScheduling ?
 			FailoverStrategyLoader.loadFailoverStrategy(jobMasterConfiguration, log) :
@@ -283,7 +303,10 @@ public abstract class SchedulerBase implements SchedulerNG {
 			log,
 			shuffleMaster,
 			partitionTracker,
-			failoverStrategy);
+			failoverStrategy,
+			executionDeploymentListener,
+			executionStateUpdateListener,
+			initializationTimestamp);
 	}
 
 	/**
@@ -384,10 +407,6 @@ public abstract class SchedulerBase implements SchedulerNG {
 		return executionGraph.getResultPartitionAvailabilityChecker();
 	}
 
-	protected final InputsLocationsRetriever getInputsLocationsRetriever() {
-		return inputsLocationsRetriever;
-	}
-
 	protected final void prepareExecutionGraphForNgScheduling() {
 		executionGraph.enableNgScheduling(new UpdateSchedulerNgOnInternalFailuresListener(this, jobGraph.getJobID()));
 		executionGraph.transitionToRunning();
@@ -435,6 +454,17 @@ public abstract class SchedulerBase implements SchedulerNG {
 	@VisibleForTesting
 	CheckpointCoordinator getCheckpointCoordinator() {
 		return executionGraph.getCheckpointCoordinator();
+	}
+
+	/**
+	 * ExecutionGraph is exposed to make it easier to rework tests to be based on the new scheduler.
+	 * ExecutionGraph is expected to be used only for state check. Yet at the moment, before all the
+	 * actions are factored out from ExecutionGraph and its sub-components, some actions may still
+	 * be performed directly on it.
+	 */
+	@VisibleForTesting
+	public ExecutionGraph getExecutionGraph() {
+		return executionGraph;
 	}
 
 	// ------------------------------------------------------------------------
@@ -491,7 +521,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 	}
 
 	@Override
-	public final boolean updateTaskExecutionState(final TaskExecutionState taskExecutionState) {
+	public final boolean updateTaskExecutionState(final TaskExecutionStateTransition taskExecutionState) {
 		final Optional<ExecutionVertexID> executionVertexId = getExecutionVertexId(taskExecutionState.getID());
 
 		boolean updateSuccess = executionGraph.updateState(taskExecutionState);
@@ -510,7 +540,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 
 	private boolean isNotifiable(
 			final ExecutionVertexID executionVertexId,
-			final TaskExecutionState taskExecutionState) {
+			final TaskExecutionStateTransition taskExecutionState) {
 
 		final ExecutionVertex executionVertex = getExecutionVertex(executionVertexId);
 
@@ -533,7 +563,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 		return false;
 	}
 
-	protected void updateTaskExecutionStateInternal(final ExecutionVertexID executionVertexId, final TaskExecutionState taskExecutionState) {
+	protected void updateTaskExecutionStateInternal(final ExecutionVertexID executionVertexId, final TaskExecutionStateTransition taskExecutionState) {
 	}
 
 	@Override
@@ -641,7 +671,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 	@Override
 	public JobDetails requestJobDetails() {
 		mainThreadExecutor.assertRunningInMainThread();
-		return WebMonitorUtils.createDetailsForJob(executionGraph);
+		return JobDetails.createDetailsForJob(executionGraph);
 	}
 
 	@Override
@@ -746,6 +776,8 @@ public abstract class SchedulerBase implements SchedulerNG {
 					"while cancelling via -s :targetDirectory or configure a cluster-wide " +
 					"default via key '" + CheckpointingOptions.SAVEPOINT_DIRECTORY.key() + "'.");
 		}
+
+		log.info("Triggering {}savepoint for job {}.", cancelJob ? "cancel-with-" : "", jobGraph.getJobID());
 
 		if (cancelJob) {
 			checkpointCoordinator.stopCheckpointScheduler();
@@ -856,6 +888,8 @@ public abstract class SchedulerBase implements SchedulerNG {
 					"while cancelling via -s :targetDirectory or configure a cluster-wide " +
 					"default via key '" + CheckpointingOptions.SAVEPOINT_DIRECTORY.key() + "'."));
 		}
+
+		log.info("Triggering stop-with-savepoint for job {}.", jobGraph.getJobID());
 
 		// we stop the checkpoint coordinator so that we are guaranteed
 		// to have only the data of the synchronous savepoint committed.

@@ -2,7 +2,6 @@
 title: "SQL Client"
 nav-parent_id: tableapi
 nav-pos: 90
-is_beta: true
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -30,8 +29,6 @@ The *SQL Client* aims to provide an easy way of writing, debugging, and submitti
 
 <a href="{{ site.baseurl }}/fig/sql_client_demo.gif"><img class="offset" src="{{ site.baseurl }}/fig/sql_client_demo.gif" alt="Animated demo of the Flink SQL Client CLI running table programs on a cluster" width="80%" /></a>
 
-<span class="label label-danger">Attention</span> The SQL Client is in an early development phase. Even though the application is not production-ready yet, it can be a quite useful tool for prototyping and playing around with Flink SQL. In the future, the community plans to extend its functionality by providing a REST-based [SQL Client Gateway](sqlClient.html#limitations--future).
-
 * This will be replaced by the TOC
 {:toc}
 
@@ -40,7 +37,7 @@ Getting Started
 
 This section describes how to setup and run your first Flink SQL program from the command-line.
 
-The SQL Client is bundled in the regular Flink distribution and thus runnable out-of-the-box. It requires only a running Flink cluster where table programs can be executed. For more information about setting up a Flink cluster see the [Cluster & Deployment]({{ site.baseurl }}/ops/deployment/cluster_setup.html) part. If you simply want to try out the SQL Client, you can also start a local cluster with one worker using the following command:
+The SQL Client is bundled in the regular Flink distribution and thus runnable out-of-the-box. It requires only a running Flink cluster where table programs can be executed. For more information about setting up a Flink cluster see the [Cluster & Deployment]({{ site.baseurl }}/deployment/resource-providers/standalone/index.html) part. If you simply want to try out the SQL Client, you can also start a local cluster with one worker using the following command:
 
 {% highlight bash %}
 ./bin/start-cluster.sh
@@ -66,7 +63,7 @@ SELECT 'Hello World';
 
 This query requires no table source and produces a single row result. The CLI will retrieve results from the cluster and visualize them. You can close the result view by pressing the `Q` key.
 
-The CLI supports **two modes** for maintaining and visualizing results.
+The CLI supports **three modes** for maintaining and visualizing results.
 
 The **table mode** materializes results in memory and visualizes them in a regular, paginated table representation. It can be enabled by executing the following command in the CLI:
 
@@ -80,7 +77,18 @@ The **changelog mode** does not materialize results and visualizes the result st
 SET execution.result-mode=changelog;
 {% endhighlight %}
 
-You can use the following query to see both result modes in action:
+The **tableau mode** is more like a traditional way which will display the results in the screen directly with a tableau format.
+The displaying content will be influenced by the query execution type(`execution.type`).
+
+{% highlight text %}
+SET execution.result-mode=tableau;
+{% endhighlight %}
+
+Note that when you use this mode with streaming query, the result will be continuously printed on the console. If the input data of 
+this query is bounded, the job will terminate after Flink processed all input data, and the printing will also be stopped automatically.
+Otherwise, if you want to terminate a running query, just type `CTRL-C` in this case, the job and the printing will be stopped.
+
+You can use the following query to see all the result modes in action:
 
 {% highlight sql %}
 SELECT name, COUNT(*) AS cnt FROM (VALUES ('Bob'), ('Alice'), ('Greg'), ('Bob')) AS NameTable(name) GROUP BY name;
@@ -106,9 +114,35 @@ Alice, 1
 Greg, 1
 {% endhighlight %}
 
-Both result modes can be useful during the prototyping of SQL queries. In both modes, results are stored in the Java heap memory of the SQL Client. In order to keep the CLI interface responsive, the changelog mode only shows the latest 1000 changes. The table mode allows for navigating through bigger results that are only limited by the available main memory and the configured [maximum number of rows](sqlClient.html#configuration) (`max-table-result-rows`).
+In *tableau mode*, if you ran the query in streaming mode, the displayed result would be:
+{% highlight text %}
++-----+----------------------+----------------------+
+| +/- |                 name |                  cnt |
++-----+----------------------+----------------------+
+|   + |                  Bob |                    1 |
+|   + |                Alice |                    1 |
+|   + |                 Greg |                    1 |
+|   - |                  Bob |                    1 |
+|   + |                  Bob |                    2 |
++-----+----------------------+----------------------+
+Received a total of 5 rows
+{% endhighlight %}
 
-<span class="label label-danger">Attention</span> Queries that are executed in a batch environment, can only be retrieved using the `table` result mode.
+And if you ran the query in batch mode, the displayed result would be:
+{% highlight text %}
++-------+-----+
+|  name | cnt |
++-------+-----+
+| Alice |   1 |
+|   Bob |   2 |
+|  Greg |   1 |
++-------+-----+
+3 rows in set
+{% endhighlight %}
+
+All these result modes can be useful during the prototyping of SQL queries. In all these modes, results are stored in the Java heap memory of the SQL Client. In order to keep the CLI interface responsive, the changelog mode only shows the latest 1000 changes. The table mode allows for navigating through bigger results that are only limited by the available main memory and the configured [maximum number of rows](sqlClient.html#configuration) (`max-table-result-rows`).
+
+<span class="label label-danger">Attention</span> Queries that are executed in a batch environment, can only be retrieved using the `table` or `tableau` result mode.
 
 After a query is defined, it can be submitted to the cluster as a long-running, detached Flink job. For this, a target system that stores the results needs to be specified using the [INSERT INTO statement](sqlClient.html#detached-sql-queries). The [configuration section](sqlClient.html#configuration) explains how to declare table sources for reading data, how to declare table sinks for writing data, and how to configure other table program properties.
 
@@ -188,7 +222,7 @@ Mode "embedded" submits Flink jobs from the local machine.
                                            --pyExecutable
                                            /usr/local/bin/python3). The python
                                            UDF worker depends on Python 3.5+,
-                                           Apache Beam (version == 2.19.0), Pip
+                                           Apache Beam (version == 2.23.0), Pip
                                            (version >= 7.1.0) and SetupTools
                                            (version >= 37.0.0). Please ensure
                                            that the specified environment meets
@@ -254,16 +288,16 @@ tables:
       type: csv
       fields:
         - name: MyField1
-          type: INT
+          data-type: INT
         - name: MyField2
-          type: VARCHAR
+          data-type: VARCHAR
       line-delimiter: "\n"
       comment-prefix: "#"
     schema:
       - name: MyField1
-        type: INT
+        data-type: INT
       - name: MyField2
-        type: VARCHAR
+        data-type: VARCHAR
   - name: MyCustomView
     type: view
     query: "SELECT MyField2 FROM MyTableSource"
@@ -435,7 +469,7 @@ The SQL Client allows users to create custom, user-defined functions to be used 
 
 In order to provide a Java/Scala user-defined function, you need to first implement and compile a function class that extends `ScalarFunction`, `AggregateFunction` or `TableFunction` (see [User-defined Functions]({{ site.baseurl }}/dev/table/functions/udfs.html)). One or more functions can then be packaged into a dependency JAR for the SQL Client.
 
-In order to provide a Python user-defined function, you need to write a Python function and decorate it with the `pyflink.table.udf.udf` or `pyflink.table.udf.udtf` decorator (see [Python UDFs]({{ site.baseurl }}/dev/table/python/python_udfs.html)). One or more functions can then be placed into a Python file. The Python file and related dependencies need to be specified via the configuration (see [Python Configuration]({{ site.baseurl }}/dev/table/python/python_config.html)) in environment file or the command line options (see [Command Line Usage]({{ site.baseurl }}/ops/cli.html#usage)).
+In order to provide a Python user-defined function, you need to write a Python function and decorate it with the `pyflink.table.udf.udf` or `pyflink.table.udf.udtf` decorator (see [Python UDFs]({% link dev/python/table-api-users-guide/udfs/python_udfs.md %})). One or more functions can then be placed into a Python file. The Python file and related dependencies need to be specified via the configuration (see [Python Configuration]({% link dev/python/python_config.md %})) in environment file or the command line options (see [Command Line Usage]({{ site.baseurl }}/deployment/cli.html#usage)).
 
 All functions must be declared in an environment file before being called. For each item in the list of `functions`, one must specify
 
@@ -690,6 +724,6 @@ As shown in the example, definitions of table sources, views, and temporal table
 Limitations & Future
 --------------------
 
-The current SQL Client implementation is in a very early development stage and might change in the future as part of the bigger Flink Improvement Proposal 24 ([FLIP-24](https://cwiki.apache.org/confluence/display/FLINK/FLIP-24+-+SQL+Client)). Feel free to join the discussion and open issue about bugs and features that you find useful.
+The current SQL Client only supports embedded mode. In the future, the community plans to extend its functionality by providing a REST-based SQL Client Gateway, see more in [FLIP-24](https://cwiki.apache.org/confluence/display/FLINK/FLIP-24+-+SQL+Client) and [FLIP-91](https://cwiki.apache.org/confluence/display/FLINK/FLIP-91%3A+Support+SQL+Client+Gateway).
 
 {% top %}

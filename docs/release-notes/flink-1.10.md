@@ -32,7 +32,7 @@ these notes carefully if you are planning to upgrade your Flink version to 1.10.
 ### Clusters & Deployment
 #### FileSystems should be loaded via Plugin Architecture ([FLINK-11956](https://issues.apache.org/jira/browse/FLINK-11956))
 s3-hadoop and s3-presto filesystems do no longer use class relocations and need
-to be loaded through [plugins]({{ site.baseurl }}/ops/filesystems/#pluggable-file-systems)
+to be loaded through [plugins]({{ site.baseurl }}/deployment/filesystems/#pluggable-file-systems)
 but now seamlessly integrate with all credential providers. Other filesystems
 are strongly recommended to be only used as plugins as we will continue to
 remove relocations.
@@ -157,7 +157,7 @@ If you try to reuse your previous Flink configuration without any adjustments,
 the new memory model can result in differently computed memory parameters for
 the JVM and, thus, performance changes.
 
-Please, check [the user documentation](../ops/memory/mem_setup.html) for more details.
+Please, check [the user documentation](../deployment/memory/mem_setup.html) for more details.
 
 ##### Deprecation and breaking changes
 The following options have been removed and have no effect anymore:
@@ -464,3 +464,7 @@ blocked. The `MailboxExecutor` can be accessed by using
 Interfaces `OptionsFactory` and `ConfigurableOptionsFactory` have been
 deprecated in favor of `RocksDBOptionsFactory` and
 `ConfigurableRocksDBOptionsFactory`, respectively.
+
+#### Incompatibility of serialized JobGraphs ([FLINK-14594](https://issues.apache.org/jira/browse/FLINK-14594))
+Serialized `JobGraphs` which set the `ResourceSpec` created by Flink versions < `1.10` are no longer compatible with Flink >= `1.10`. 
+If you want to migrate these jobs to Flink >= `1.10` you will have to stop the job with a savepoint and then resume it from this savepoint on the Flink >= `1.10` cluster.

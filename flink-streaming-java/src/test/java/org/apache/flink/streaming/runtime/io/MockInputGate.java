@@ -18,11 +18,11 @@
 
 package org.apache.flink.streaming.runtime.io;
 
-import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
-import org.apache.flink.runtime.io.network.buffer.BufferReceivedListener;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
+import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 
@@ -32,12 +32,13 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * Mock {@link InputGate}.
  */
-public class MockInputGate extends InputGate {
+public class MockInputGate extends IndexedInputGate {
 
 	private final int numberOfChannels;
 
@@ -70,8 +71,12 @@ public class MockInputGate extends InputGate {
 	}
 
 	@Override
-	public CompletableFuture<?> readRecoveredState(ExecutorService executor, ChannelStateReader reader) {
+	public CompletableFuture<Void> getStateConsumedFuture() {
 		return CompletableFuture.completedFuture(null);
+	}
+
+	@Override
+	public void finishReadRecoveredState() {
 	}
 
 	@Override
@@ -89,6 +94,13 @@ public class MockInputGate extends InputGate {
 	}
 
 	@Override
+	public List<InputChannelInfo> getChannelInfos() {
+		return IntStream.range(0, numberOfChannels)
+			.mapToObj(channelIndex -> new InputChannelInfo(0, channelIndex))
+			.collect(Collectors.toList());
+	}
+
+	@Override
 	public boolean isFinished() {
 		return finishAfterLastBuffer && bufferOrEvents.isEmpty();
 	}
@@ -103,7 +115,7 @@ public class MockInputGate extends InputGate {
 			return Optional.empty();
 		}
 
-		int channelIdx = next.getChannelIndex();
+		int channelIdx = next.getChannelInfo().getInputChannelIdx();
 		if (closed[channelIdx]) {
 			throw new RuntimeException("Inconsistent: Channel " + channelIdx
 				+ " has data even though it is already closed.");
@@ -124,8 +136,8 @@ public class MockInputGate extends InputGate {
 	}
 
 	@Override
-	public void resumeConsumption(int channelIndex) {
-		lastUnblockedChannels.add(channelIndex);
+	public void resumeConsumption(InputChannelInfo channelInfo) {
+		lastUnblockedChannels.add(channelInfo.getInputChannelIdx());
 	}
 
 	public ArrayList<Integer> getAndResetLastUnblockedChannels() {
@@ -139,6 +151,7 @@ public class MockInputGate extends InputGate {
 	}
 
 	@Override
-	public void registerBufferReceivedListener(BufferReceivedListener listener) {
+	public int getGateIndex() {
+		return 0;
 	}
 }

@@ -33,7 +33,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.TestDynamicTableFactory;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
-import org.apache.flink.table.runtime.typeutils.RowDataTypeInfo;
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.TestLogger;
 
@@ -91,6 +91,44 @@ public class JsonFormatFactoryTest extends TestLogger {
 		testSchemaDeserializationSchema(tableOptions);
 	}
 
+	@Test
+	public void testInvalidOptionForTimestampFormat() {
+		final Map<String, String> tableOptions = getModifyOptions(
+			options -> options.put("json.timestamp-format.standard", "test"));
+
+		thrown.expect(ValidationException.class);
+		thrown.expect(containsCause(new ValidationException("Unsupported value 'test' for timestamp-format.standard. Supported values are [SQL, ISO-8601].")));
+		testSchemaDeserializationSchema(tableOptions);
+	}
+
+	@Test
+	public void testLowerCaseOptionForTimestampFormat() {
+		final Map<String, String> tableOptions = getModifyOptions(
+			options -> options.put("json.timestamp-format.standard", "iso-8601"));
+
+		thrown.expect(ValidationException.class);
+		thrown.expect(containsCause(new ValidationException("Unsupported value 'iso-8601' for timestamp-format.standard. Supported values are [SQL, ISO-8601].")));
+		testSchemaDeserializationSchema(tableOptions);
+	}
+
+	@Test
+	public void testInvalidOptionForMapNullKeyMode() {
+		final Map<String, String> tableOptions = getModifyOptions(
+			options -> options.put("json.map-null-key.mode", "invalid"));
+
+		thrown.expect(ValidationException.class);
+		thrown.expect(containsCause(new ValidationException("Unsupported value 'invalid' for option map-null-key.mode. Supported values are [LITERAL, FAIL, DROP].")));
+		testSchemaSerializationSchema(tableOptions);
+	}
+
+	@Test
+	public void testLowerCaseOptionForMapNullKeyMode() {
+		final Map<String, String> tableOptions = getModifyOptions(
+			options -> options.put("json.map-null-key.mode", "fail"));
+
+		testSchemaDeserializationSchema(tableOptions);
+	}
+
 	// ------------------------------------------------------------------------
 	//  Utilities
 	// ------------------------------------------------------------------------
@@ -99,9 +137,10 @@ public class JsonFormatFactoryTest extends TestLogger {
 		final JsonRowDataDeserializationSchema expectedDeser =
 				new JsonRowDataDeserializationSchema(
 						ROW_TYPE,
-						new RowDataTypeInfo(ROW_TYPE),
+						InternalTypeInfo.of(ROW_TYPE),
 						false,
-						true);
+						true,
+						TimestampFormat.ISO_8601);
 
 		final DynamicTableSource actualSource = createTableSource(options);
 		assert actualSource instanceof TestDynamicTableFactory.DynamicTableSourceMock;
@@ -117,7 +156,11 @@ public class JsonFormatFactoryTest extends TestLogger {
 	}
 
 	private void testSchemaSerializationSchema(Map<String, String> options) {
-		final JsonRowDataSerializationSchema expectedSer = new JsonRowDataSerializationSchema(ROW_TYPE);
+		final JsonRowDataSerializationSchema expectedSer = new JsonRowDataSerializationSchema(
+				ROW_TYPE,
+				TimestampFormat.ISO_8601,
+				JsonOptions.MapNullKeyMode.LITERAL,
+				"null");
 
 		final DynamicTableSink actualSink = createTableSink(options);
 		assert actualSink instanceof TestDynamicTableFactory.DynamicTableSinkMock;
@@ -152,6 +195,9 @@ public class JsonFormatFactoryTest extends TestLogger {
 		options.put("format", JsonFormatFactory.IDENTIFIER);
 		options.put("json.fail-on-missing-field", "false");
 		options.put("json.ignore-parse-errors", "true");
+		options.put("json.timestamp-format.standard", "ISO-8601");
+		options.put("json.map-null-key.mode", "LITERAL");
+		options.put("json.map-null-key.literal", "null");
 		return options;
 	}
 
@@ -161,7 +207,8 @@ public class JsonFormatFactoryTest extends TestLogger {
 				ObjectIdentifier.of("default", "default", "t1"),
 				new CatalogTableImpl(SCHEMA, options, "Mock scan table"),
 				new Configuration(),
-				JsonFormatFactoryTest.class.getClassLoader());
+				JsonFormatFactoryTest.class.getClassLoader(),
+				false);
 	}
 
 	private static DynamicTableSink createTableSink(Map<String, String> options) {
@@ -170,6 +217,7 @@ public class JsonFormatFactoryTest extends TestLogger {
 				ObjectIdentifier.of("default", "default", "t1"),
 				new CatalogTableImpl(SCHEMA, options, "Mock sink table"),
 				new Configuration(),
-				JsonFormatFactoryTest.class.getClassLoader());
+				JsonFormatFactoryTest.class.getClassLoader(),
+				false);
 	}
 }

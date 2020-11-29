@@ -42,11 +42,8 @@ import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.catalog.UnresolvedIdentifier;
-import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.client.SqlClientException;
 import org.apache.flink.table.client.config.Environment;
-import org.apache.flink.table.client.config.entries.TableEntry;
-import org.apache.flink.table.client.config.entries.ViewEntry;
 import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
@@ -288,7 +285,7 @@ public class LocalExecutor implements Executor {
 		Environment env = context.getEnvironment();
 		Environment newEnv;
 		try {
-			newEnv = Environment.enrich(env, Collections.singletonMap(key, value), Collections.emptyMap());
+			newEnv = Environment.enrich(env, Collections.singletonMap(key, value));
 		} catch (Throwable t) {
 			throw new SqlExecutionException("Could not set session property.", t);
 		}
@@ -305,97 +302,6 @@ public class LocalExecutor implements Executor {
 	}
 
 	@Override
-	public void addView(String sessionId, String name, String query) throws SqlExecutionException {
-		ExecutionContext<?> context = getExecutionContext(sessionId);
-		TableEnvironment tableEnv = context.getTableEnvironment();
-		tableEnv.createTemporaryView(name, tableEnv.sqlQuery(query));
-		// Also attach the view to ExecutionContext#environment.
-		context.getEnvironment().getTables().put(name, ViewEntry.create(name, query));
-	}
-
-	@Override
-	public void removeView(String sessionId, String name) throws SqlExecutionException {
-		// Here we rebuild the ExecutionContext because we want to ensure that all the remaining views can work fine.
-		// Assume the case:
-		//   view1=select 1;
-		//   view2=select * from view1;
-		// If we delete view1 successfully, then query view2 will throw exception because view1 does not exist. we want
-		// all the remaining views are OK, so do the ExecutionContext rebuilding to avoid breaking the view dependency.
-		ExecutionContext<?> context = getExecutionContext(sessionId);
-		Environment env = context.getEnvironment();
-		Environment newEnv = env.clone();
-		if (newEnv.getTables().remove(name) != null) {
-			// Renew the ExecutionContext.
-			this.contextMap.put(
-					sessionId,
-					createExecutionContextBuilder(context.getOriginalSessionContext())
-							.env(newEnv).build());
-		}
-	}
-
-	@Override
-	public Map<String, ViewEntry> listViews(String sessionId) throws SqlExecutionException {
-		Map<String, ViewEntry> views = new HashMap<>();
-		Map<String, TableEntry> tables = getExecutionContext(sessionId).getEnvironment().getTables();
-		for (Map.Entry<String, TableEntry> entry : tables.entrySet()) {
-			if (entry.getValue() instanceof ViewEntry) {
-				views.put(entry.getKey(), (ViewEntry) entry.getValue());
-			}
-		}
-		return views;
-	}
-
-	@Override
-	public List<String> listCatalogs(String sessionId) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-		return context.wrapClassLoader(() -> Arrays.asList(tableEnv.listCatalogs()));
-	}
-
-	@Override
-	public List<String> listDatabases(String sessionId) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-		return context.wrapClassLoader(() -> Arrays.asList(tableEnv.listDatabases()));
-	}
-
-	@Override
-	public void createTable(String sessionId, String ddl) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tEnv = context.getTableEnvironment();
-		try {
-			context.wrapClassLoader(() -> tEnv.executeSql(ddl));
-		} catch (Exception e) {
-			throw new SqlExecutionException("Could not create a table from statement: " + ddl, e);
-		}
-	}
-
-	@Override
-	public void dropTable(String sessionId, String ddl) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tEnv = context.getTableEnvironment();
-		try {
-			context.wrapClassLoader(() -> tEnv.executeSql(ddl));
-		} catch (Exception e) {
-			throw new SqlExecutionException("Could not drop table from statement: " + ddl, e);
-		}
-	}
-
-	@Override
-	public List<String> listTables(String sessionId) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-		return context.wrapClassLoader(() -> Arrays.asList(tableEnv.listTables()));
-	}
-
-	@Override
-	public List<String> listUserDefinedFunctions(String sessionId) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-		return context.wrapClassLoader(() -> Arrays.asList(tableEnv.listUserDefinedFunctions()));
-	}
-
-	@Override
 	public TableResult executeSql(String sessionId, String statement) throws SqlExecutionException {
 		final ExecutionContext<?> context = getExecutionContext(sessionId);
 		final TableEnvironment tEnv = context.getTableEnvironment();
@@ -407,59 +313,10 @@ public class LocalExecutor implements Executor {
 	}
 
 	@Override
-	public List<String> listFunctions(String sessionId) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-		return context.wrapClassLoader(() -> Arrays.asList(tableEnv.listFunctions()));
-	}
-
-	@Override
 	public List<String> listModules(String sessionId) throws SqlExecutionException {
 		final ExecutionContext<?> context = getExecutionContext(sessionId);
 		final TableEnvironment tableEnv = context.getTableEnvironment();
 		return context.wrapClassLoader(() -> Arrays.asList(tableEnv.listModules()));
-	}
-
-	@Override
-	public void useCatalog(String sessionId, String catalogName) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-
-		context.wrapClassLoader(() -> {
-			// Rely on TableEnvironment/CatalogManager to validate input
-			try {
-				tableEnv.useCatalog(catalogName);
-			} catch (CatalogException e) {
-				throw new SqlExecutionException("Failed to switch to catalog " + catalogName, e);
-			}
-		});
-	}
-
-	@Override
-	public void useDatabase(String sessionId, String databaseName) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-
-		context.wrapClassLoader(() -> {
-			// Rely on TableEnvironment/CatalogManager to validate input
-			try {
-				tableEnv.useDatabase(databaseName);
-			} catch (CatalogException e) {
-				throw new SqlExecutionException("Failed to switch to database " + databaseName, e);
-			}
-		});
-	}
-
-	@Override
-	public TableSchema getTableSchema(String sessionId, String name) throws SqlExecutionException {
-		final ExecutionContext<?> context = getExecutionContext(sessionId);
-		final TableEnvironment tableEnv = context.getTableEnvironment();
-		try {
-			return context.wrapClassLoader(() -> tableEnv.from(name).getSchema());
-		} catch (Throwable t) {
-			// catch everything such that the query does not crash the executor
-			throw new SqlExecutionException("No table with this name could be found.", t);
-		}
 	}
 
 	@Override
@@ -628,15 +485,19 @@ public class LocalExecutor implements Executor {
 		configuration.set(DeploymentOptions.ATTACHED, false);
 
 		// create execution
-		final ProgramDeployer deployer = new ProgramDeployer(configuration, jobName, pipeline);
+		final ProgramDeployer deployer = new ProgramDeployer(configuration, jobName, pipeline, context.getClassLoader());
 
-		// blocking deployment
-		try {
-			JobClient jobClient = deployer.deploy().get();
-			return ProgramTargetDescriptor.of(jobClient.getJobID());
-		} catch (Exception e) {
-			throw new RuntimeException("Error running SQL job.", e);
-		}
+		// wrap in classloader because CodeGenOperatorFactory#getStreamOperatorClass
+		// requires to access UDF in deployer.deploy().
+		return context.wrapClassLoader(() -> {
+			try {
+				// blocking deployment
+				JobClient jobClient = deployer.deploy().get();
+				return ProgramTargetDescriptor.of(jobClient.getJobID());
+			} catch (Exception e) {
+				throw new RuntimeException("Error running SQL job.", e);
+			}
+		});
 	}
 
 	private <C> ResultDescriptor executeQueryInternal(String sessionId, ExecutionContext<C> context, String query) {
@@ -647,8 +508,7 @@ public class LocalExecutor implements Executor {
 		final DynamicResult<C> result = resultStore.createResult(
 				context.getEnvironment(),
 				removeTimeAttributes(table.getSchema()),
-				context.getExecutionConfig(),
-				context.getClassLoader());
+				context.getExecutionConfig());
 		final String jobName = sessionId + ": " + query;
 		final String tableName = String.format("_tmp_table_%s", Math.abs(query.hashCode()));
 		final Pipeline pipeline;
@@ -681,15 +541,19 @@ public class LocalExecutor implements Executor {
 
 		// create execution
 		final ProgramDeployer deployer = new ProgramDeployer(
-				configuration, jobName, pipeline);
+				configuration, jobName, pipeline, context.getClassLoader());
 
 		JobClient jobClient;
-		// blocking deployment
-		try {
-			jobClient = deployer.deploy().get();
-		} catch (Exception e) {
-			throw new SqlExecutionException("Error while submitting job.", e);
-		}
+		// wrap in classloader because CodeGenOperatorFactory#getStreamOperatorClass
+		// requires to access UDF in deployer.deploy().
+		jobClient = context.wrapClassLoader(() -> {
+			try {
+				// blocking deployment
+				return deployer.deploy().get();
+			} catch (Exception e) {
+				throw new SqlExecutionException("Error while submitting job.", e);
+			}
+		});
 
 		String jobId = jobClient.getJobID().toString();
 		// store the result under the JobID

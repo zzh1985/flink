@@ -37,36 +37,56 @@ Flink supports the following formats:
     </thead>
     <tbody>
         <tr>
-          <td>CSV</td>
-          <td>Apache Kafka,
-          <a href="{{ site.baseurl }}/dev/table/connectors/filesystem.html">Filesystem</a></td>
+          <td><a href="{% link dev/table/connectors/formats/csv.md %}">CSV</a></td>
+          <td><a href="{% link dev/table/connectors/kafka.md %}">Apache Kafka</a>,
+          <a href="{% link dev/table/connectors/upsert-kafka.md %}">Upsert Kafka</a>,
+          <a href="{% link dev/table/connectors/kinesis.md %}">Amazon Kinesis Data Streams</a>,
+          <a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a></td>
         </tr>
         <tr>
-         <td>JSON</td>
-         <td>Apache Kafka,
-          <a href="{{ site.baseurl }}/dev/table/connectors/filesystem.html">Filesystem</a>,
-          Elasticsearch</td>
-       </tr>
-        <tr>
-          <td><a href="{{ site.baseurl }}/dev/table/connectors/formats/avro.html">Apache Avro</a></td>
-          <td>Apache Kafka,
-           <a href="{{ site.baseurl }}/dev/table/connectors/filesystem.html">Filesystem</a></td>
+         <td><a href="{% link dev/table/connectors/formats/json.md %}">JSON</a></td>
+         <td><a href="{% link dev/table/connectors/kafka.md %}">Apache Kafka</a>,
+          <a href="{% link dev/table/connectors/upsert-kafka.md %}">Upsert Kafka</a>,
+          <a href="{% link dev/table/connectors/kinesis.md %}">Amazon Kinesis Data Streams</a>,
+          <a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a>,
+          <a href="{% link dev/table/connectors/elasticsearch.md %}">Elasticsearch</a></td>
         </tr>
         <tr>
-         <td>Debezium JSON</td>
-         <td>Apache Kafka</td>
+          <td><a href="{% link dev/table/connectors/formats/avro.md %}">Apache Avro</a></td>
+          <td><a href="{% link dev/table/connectors/kafka.md %}">Apache Kafka</a>,
+           <a href="{% link dev/table/connectors/upsert-kafka.md %}">Upsert Kafka</a>,
+           <a href="{% link dev/table/connectors/kinesis.md %}">Amazon Kinesis Data Streams</a>,
+           <a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a></td>
         </tr>
         <tr>
-         <td>Canal JSON</td>
-         <td>Apache Kafka</td>
+          <td><a href="{% link dev/table/connectors/formats/avro-confluent.md %}">Confluent Avro</a></td>
+          <td><a href="{% link dev/table/connectors/kafka.md %}">Apache Kafka</a>,
+           <a href="{% link dev/table/connectors/upsert-kafka.md %}">Upsert Kafka</a></td>
         </tr>
         <tr>
-         <td>Apache Parquet</td>
-         <td><a href="{{ site.baseurl }}/dev/table/connectors/filesystem.html">Filesystem</a></td>
+         <td><a href="{% link dev/table/connectors/formats/debezium.md %}">Debezium CDC</a></td>
+          <td><a href="{% link dev/table/connectors/kafka.md %}">Apache Kafka</a>,
+           <a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a></td>
         </tr>
         <tr>
-         <td>Apache ORC</td>
-         <td><a href="{{ site.baseurl }}/dev/table/connectors/filesystem.html">Filesystem</a></td>
+         <td><a href="{% link dev/table/connectors/formats/canal.md %}">Canal CDC</a></td>
+          <td><a href="{% link dev/table/connectors/kafka.md %}">Apache Kafka</a>,
+           <a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a></td>
+        </tr>
+        <tr>
+         <td><a href="{% link dev/table/connectors/formats/parquet.md %}">Apache Parquet</a></td>
+         <td><a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a></td>
+        </tr>
+        <tr>
+         <td><a href="{% link dev/table/connectors/formats/orc.md %}">Apache ORC</a></td>
+         <td><a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a></td>
+        </tr>
+        <tr>
+        <td><a href="{% link dev/table/connectors/formats/raw.md %}">Raw</a></td>
+        <td><a href="{% link dev/table/connectors/kafka.md %}">Apache Kafka</a>,
+          <a href="{% link dev/table/connectors/upsert-kafka.md %}">Upsert Kafka</a>,
+          <a href="{% link dev/table/connectors/kinesis.md %}">Amazon Kinesis Data Streams</a>,
+          <a href="{% link dev/table/connectors/filesystem.md %}">Filesystem</a></td>
         </tr>
     </tbody>
 </table>

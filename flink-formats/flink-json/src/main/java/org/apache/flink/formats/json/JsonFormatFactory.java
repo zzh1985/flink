@@ -23,7 +23,6 @@ import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -43,6 +42,11 @@ import java.util.Set;
 
 import static org.apache.flink.formats.json.JsonOptions.FAIL_ON_MISSING_FIELD;
 import static org.apache.flink.formats.json.JsonOptions.IGNORE_PARSE_ERRORS;
+import static org.apache.flink.formats.json.JsonOptions.MAP_NULL_KEY_LITERAL;
+import static org.apache.flink.formats.json.JsonOptions.MAP_NULL_KEY_MODE;
+import static org.apache.flink.formats.json.JsonOptions.TIMESTAMP_FORMAT;
+import static org.apache.flink.formats.json.JsonOptions.validateDecodingFormatOptions;
+import static org.apache.flink.formats.json.JsonOptions.validateEncodingFormatOptions;
 
 /**
  * Table format factory for providing configured instances of JSON to RowData
@@ -54,16 +58,16 @@ public class JsonFormatFactory implements
 
 	public static final String IDENTIFIER = "json";
 
-	@SuppressWarnings("unchecked")
 	@Override
 	public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
 			DynamicTableFactory.Context context,
 			ReadableConfig formatOptions) {
 		FactoryUtil.validateFactoryOptions(this, formatOptions);
-		validateFormatOptions(formatOptions);
+		validateDecodingFormatOptions(formatOptions);
 
 		final boolean failOnMissingField = formatOptions.get(FAIL_ON_MISSING_FIELD);
 		final boolean ignoreParseErrors = formatOptions.get(IGNORE_PARSE_ERRORS);
+		TimestampFormat timestampOption = JsonOptions.getTimestampFormat(formatOptions);
 
 		return new DecodingFormat<DeserializationSchema<RowData>>() {
 			@Override
@@ -72,12 +76,14 @@ public class JsonFormatFactory implements
 					DataType producedDataType) {
 				final RowType rowType = (RowType) producedDataType.getLogicalType();
 				final TypeInformation<RowData> rowDataTypeInfo =
-						(TypeInformation<RowData>) context.createTypeInformation(producedDataType);
+						context.createTypeInformation(producedDataType);
 				return new JsonRowDataDeserializationSchema(
 						rowType,
 						rowDataTypeInfo,
 						failOnMissingField,
-						ignoreParseErrors);
+						ignoreParseErrors,
+						timestampOption
+					);
 			}
 
 			@Override
@@ -92,6 +98,11 @@ public class JsonFormatFactory implements
 			DynamicTableFactory.Context context,
 			ReadableConfig formatOptions) {
 		FactoryUtil.validateFactoryOptions(this, formatOptions);
+		validateEncodingFormatOptions(formatOptions);
+
+		TimestampFormat timestampOption = JsonOptions.getTimestampFormat(formatOptions);
+		JsonOptions.MapNullKeyMode mapNullKeyMode = JsonOptions.getMapNullKeyMode(formatOptions);
+		String mapNullKeyLiteral = formatOptions.get(MAP_NULL_KEY_LITERAL);
 
 		return new EncodingFormat<SerializationSchema<RowData>>() {
 			@Override
@@ -99,7 +110,11 @@ public class JsonFormatFactory implements
 					DynamicTableSink.Context context,
 					DataType consumedDataType) {
 				final RowType rowType = (RowType) consumedDataType.getLogicalType();
-				return new JsonRowDataSerializationSchema(rowType);
+				return new JsonRowDataSerializationSchema(
+						rowType,
+						timestampOption,
+						mapNullKeyMode,
+						mapNullKeyLiteral);
 			}
 
 			@Override
@@ -124,21 +139,9 @@ public class JsonFormatFactory implements
 		Set<ConfigOption<?>> options = new HashSet<>();
 		options.add(FAIL_ON_MISSING_FIELD);
 		options.add(IGNORE_PARSE_ERRORS);
+		options.add(TIMESTAMP_FORMAT);
+		options.add(MAP_NULL_KEY_MODE);
+		options.add(MAP_NULL_KEY_LITERAL);
 		return options;
-	}
-
-	// ------------------------------------------------------------------------
-	//  Validation
-	// ------------------------------------------------------------------------
-
-	static void validateFormatOptions(ReadableConfig tableOptions) {
-		boolean failOnMissingField = tableOptions.get(FAIL_ON_MISSING_FIELD);
-		boolean ignoreParseErrors = tableOptions.get(IGNORE_PARSE_ERRORS);
-		if (ignoreParseErrors && failOnMissingField) {
-			throw new ValidationException(FAIL_ON_MISSING_FIELD.key()
-					+ " and "
-					+ IGNORE_PARSE_ERRORS.key()
-					+ " shouldn't both be true.");
-		}
 	}
 }

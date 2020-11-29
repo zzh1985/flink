@@ -23,7 +23,6 @@ import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.Types;
 import org.apache.flink.table.client.cli.utils.TerminalUtils;
 import org.apache.flink.table.client.config.Environment;
-import org.apache.flink.table.client.config.entries.ViewEntry;
 import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
@@ -157,77 +156,12 @@ public class CliResultViewTest {
 		}
 
 		@Override
-		public void addView(String sessionId, String name, String query) throws SqlExecutionException {
-
-		}
-
-		@Override
-		public void removeView(String sessionId, String name) throws SqlExecutionException {
-
-		}
-
-		@Override
-		public Map<String, ViewEntry> listViews(String sessionId) throws SqlExecutionException {
-			return null;
-		}
-
-		@Override
-		public List<String> listCatalogs(String sessionId) throws SqlExecutionException {
-			return null;
-		}
-
-		@Override
-		public List<String> listDatabases(String sessionId) throws SqlExecutionException {
-			return null;
-		}
-
-		@Override
-		public void createTable(String sessionId, String ddl) throws SqlExecutionException {
-
-		}
-
-		@Override
-		public void dropTable(String sessionId, String ddl) throws SqlExecutionException {
-
-		}
-
-		@Override
-		public List<String> listTables(String sessionId) throws SqlExecutionException {
-			return null;
-		}
-
-		@Override
-		public List<String> listUserDefinedFunctions(String sessionId) throws SqlExecutionException {
-			return null;
-		}
-
-		@Override
 		public TableResult executeSql(String sessionId, String statement) throws SqlExecutionException {
 			return null;
 		}
 
 		@Override
-		public List<String> listFunctions(String sessionId) throws SqlExecutionException {
-			return null;
-		}
-
-		@Override
 		public List<String> listModules(String sessionId) throws SqlExecutionException {
-			return null;
-		}
-
-		@Override
-		public void useCatalog(String sessionId, String catalogName) throws SqlExecutionException {
-
-		}
-
-		@Override
-		public void useDatabase(String sessionId, String databaseName) throws SqlExecutionException {
-
-		}
-
-		@Override
-		public TableSchema getTableSchema(String sessionId, String name) throws SqlExecutionException {
 			return null;
 		}
 

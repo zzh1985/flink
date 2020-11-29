@@ -18,9 +18,11 @@
 
 package org.apache.flink.formats.json.canal;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.formats.json.JsonRowDataDeserializationSchema;
+import org.apache.flink.formats.json.TimestampFormat;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.GenericRowData;
@@ -29,6 +31,8 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -54,6 +58,7 @@ public final class CanalJsonDeserializationSchema implements DeserializationSche
 	private static final String OP_INSERT = "INSERT";
 	private static final String OP_UPDATE = "UPDATE";
 	private static final String OP_DELETE = "DELETE";
+	private static final String OP_CREATE = "CREATE";
 
 	/** The deserializer to deserialize Debezium JSON data. */
 	private final JsonRowDataDeserializationSchema jsonDeserializer;
@@ -61,17 +66,28 @@ public final class CanalJsonDeserializationSchema implements DeserializationSche
 	/** TypeInformation of the produced {@link RowData}. **/
 	private final TypeInformation<RowData> resultTypeInfo;
 
+	/** Only read changelogs from the specific database. */
+	private final @Nullable String database;
+
+	/** Only read changelogs from the specific table. */
+	private final @Nullable String table;
+
 	/** Flag indicating whether to ignore invalid fields/rows (default: throw an exception). */
 	private final boolean ignoreParseErrors;
 
 	/** Number of fields. */
 	private final int fieldCount;
 
-	public CanalJsonDeserializationSchema(
+	private CanalJsonDeserializationSchema(
 			RowType rowType,
 			TypeInformation<RowData> resultTypeInfo,
-			boolean ignoreParseErrors) {
+			@Nullable String database,
+			@Nullable String table,
+			boolean ignoreParseErrors,
+			TimestampFormat timestampFormatOption) {
 		this.resultTypeInfo = resultTypeInfo;
+		this.database = database;
+		this.table = table;
 		this.ignoreParseErrors = ignoreParseErrors;
 		this.fieldCount = rowType.getFieldCount();
 		this.jsonDeserializer = new JsonRowDataDeserializationSchema(
@@ -79,9 +95,73 @@ public final class CanalJsonDeserializationSchema implements DeserializationSche
 			// the result type is never used, so it's fine to pass in Canal's result type
 			resultTypeInfo,
 			false, // ignoreParseErrors already contains the functionality of failOnMissingField
-			ignoreParseErrors);
+			ignoreParseErrors,
+			timestampFormatOption);
 
 	}
+
+	// ------------------------------------------------------------------------------------------
+	// Builder
+	// ------------------------------------------------------------------------------------------
+
+	/**
+	 * Creates A builder for building a {@link CanalJsonDeserializationSchema}.
+	 */
+	public static Builder builder(RowType rowType, TypeInformation<RowData> resultTypeInfo) {
+		return new Builder(rowType, resultTypeInfo);
+	}
+
+	/**
+	 * A builder for creating a {@link CanalJsonDeserializationSchema}.
+	 */
+	@Internal
+	public static final class Builder {
+		private final RowType rowType;
+		private final TypeInformation<RowData> resultTypeInfo;
+		private String database = null;
+		private String table = null;
+		private boolean ignoreParseErrors = false;
+		private TimestampFormat timestampFormat = TimestampFormat.SQL;
+
+		private Builder(RowType rowType, TypeInformation<RowData> resultTypeInfo) {
+			this.rowType = rowType;
+			this.resultTypeInfo = resultTypeInfo;
+		}
+
+		public Builder setDatabase(String database) {
+			this.database = database;
+			return this;
+		}
+
+		public Builder setTable(String table) {
+			this.table = table;
+			return this;
+		}
+
+		public Builder setIgnoreParseErrors(boolean ignoreParseErrors) {
+			this.ignoreParseErrors = ignoreParseErrors;
+			return this;
+		}
+
+		public Builder setTimestampFormat(TimestampFormat timestampFormat) {
+			this.timestampFormat = timestampFormat;
+			return this;
+		}
+
+		public CanalJsonDeserializationSchema build() {
+			return new CanalJsonDeserializationSchema(
+				rowType,
+				resultTypeInfo,
+				database,
+				table,
+				ignoreParseErrors,
+				timestampFormat
+			);
+		}
+	}
+
+
+	// ------------------------------------------------------------------------------------------
 
 	@Override
 	public RowData deserialize(byte[] message) throws IOException {
@@ -93,6 +173,18 @@ public final class CanalJsonDeserializationSchema implements DeserializationSche
 	public void deserialize(byte[] message, Collector<RowData> out) throws IOException {
 		try {
 			RowData row = jsonDeserializer.deserialize(message);
+			if (database != null) {
+				String currentDatabase = row.getString(3).toString();
+				if (!database.equals(currentDatabase)) {
+					return;
+				}
+			}
+			if (table != null) {
+				String currentTable = row.getString(4).toString();
+				if (!table.equals(currentTable)) {
+					return;
+				}
+			}
 			String type = row.getString(2).toString(); // "type" field
 			if (OP_INSERT.equals(type)) {
 				// "data" field is an array of row, contains inserted rows
@@ -132,6 +224,10 @@ public final class CanalJsonDeserializationSchema implements DeserializationSche
 					insert.setRowKind(RowKind.DELETE);
 					out.collect(insert);
 				}
+			} else if (OP_CREATE.equals(type)){
+				// "data" field is null and "type" is "CREATE" which means
+				// this is a DDL change event, and we should skip it.
+				return;
 			} else {
 				if (!ignoreParseErrors) {
 					throw new IOException(format(
@@ -178,11 +274,12 @@ public final class CanalJsonDeserializationSchema implements DeserializationSche
 	}
 
 	private static RowType createJsonRowType(DataType databaseSchema) {
-		// Canal JSON contains other information, e.g. "database", "ts"
-		// but we don't need them
+		// Canal JSON contains other information, e.g. "ts", "sql", but we don't need them
 		return (RowType) DataTypes.ROW(
 			DataTypes.FIELD("data", DataTypes.ARRAY(databaseSchema)),
 			DataTypes.FIELD("old", DataTypes.ARRAY(databaseSchema)),
-			DataTypes.FIELD("type", DataTypes.STRING())).getLogicalType();
+			DataTypes.FIELD("type", DataTypes.STRING()),
+			DataTypes.FIELD("database", DataTypes.STRING()),
+			DataTypes.FIELD("table", DataTypes.STRING())).getLogicalType();
 	}
 }

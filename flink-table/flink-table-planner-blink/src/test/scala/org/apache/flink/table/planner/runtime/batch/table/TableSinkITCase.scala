@@ -23,7 +23,6 @@ import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase
 import org.apache.flink.table.planner.runtime.utils.TestData._
 import org.apache.flink.util.ExceptionUtils
-
 import org.junit.Assert.{assertEquals, assertTrue, fail}
 import org.junit.Test
 
@@ -48,12 +47,10 @@ class TableSinkITCase extends BatchTestBase {
 
     registerCollection("MyTable", data3, type3, "a, b, c", nullablesOfData3)
 
-    tEnv.from("MyTable")
+    val table = tEnv.from("MyTable")
       .where('a > 20)
       .select("12345", 55.cast(DataTypes.DECIMAL(10, 0)), "12345".cast(DataTypes.CHAR(5)))
-      .insertInto("sink")
-
-    tEnv.execute("job name")
+    table.executeInsert("sink").await()
 
     val result = TestValuesTableFactory.getResults("sink")
     val expected = Seq("12345,55,12345")
@@ -76,12 +73,10 @@ class TableSinkITCase extends BatchTestBase {
 
     registerCollection("MyTable", data3, type3, "a, b, c", nullablesOfData3)
 
-    tEnv.from("MyTable")
+    val table = tEnv.from("MyTable")
       .where('a > 20)
       .select("12345", 55.cast(DataTypes.DECIMAL(10, 0)), "12345".cast(DataTypes.CHAR(5)))
-      .insertInto("sink")
-
-    tEnv.execute("job name")
+    table.executeInsert("sink").await()
 
     val result = TestValuesTableFactory.getResults("sink")
     val expected = Seq("12345,55,12345")
@@ -104,11 +99,10 @@ class TableSinkITCase extends BatchTestBase {
 
     registerCollection("MyTable", simpleData2, simpleType2, "a, b", nullableOfSimpleData2)
 
-    tEnv.from("MyTable")
+    val table = tEnv.from("MyTable")
       .groupBy('a)
       .select('a, 'b.sum())
-      .insertInto("testSink")
-    tEnv.execute("")
+    table.executeInsert("testSink").await()
 
     val result = TestValuesTableFactory.getResults("testSink")
     val expected = List(
@@ -135,11 +129,10 @@ class TableSinkITCase extends BatchTestBase {
 
     registerCollection("MyTable", simpleData2, simpleType2, "a, b", nullableOfSimpleData2)
 
-    tEnv.from("MyTable")
+    val table = tEnv.from("MyTable")
       .groupBy('a)
       .select('a, 'b.sum())
-      .insertInto("testSink")
-    tEnv.execute("")
+    table.executeInsert("testSink").await()
 
     val result = TestValuesTableFactory.getResults("testSink")
     val expected = List(
@@ -153,6 +146,14 @@ class TableSinkITCase extends BatchTestBase {
 
   @Test
   def testNotNullEnforcer(): Unit = {
+    innerTestNotNullEnforcer("SinkFunction")
+  }
+
+  @Test
+  def testDataStreamNotNullEnforcer(): Unit = {
+    innerTestNotNullEnforcer("DataStream")
+  }
+  def innerTestNotNullEnforcer(provider: String): Unit = {
     val dataId = TestValuesTableFactory.registerData(nullData4)
     tEnv.executeSql(
       s"""
@@ -174,14 +175,14 @@ class TableSinkITCase extends BatchTestBase {
          |  num INT NOT NULL
          |) WITH (
          |  'connector' = 'values',
-         |  'sink-insert-only' = 'true'
+         |  'sink-insert-only' = 'true',
+         |  'runtime-sink' = '$provider'
          |)
          |""".stripMargin)
-    tEnv.sqlUpdate("INSERT INTO not_null_sink SELECT * FROM nullable_src")
 
     // default should fail, because there are null values in the source
     try {
-      tEnv.execute("job name")
+      tEnv.executeSql("INSERT INTO not_null_sink SELECT * FROM nullable_src").await()
       fail("Execution should fail.")
     } catch {
       case t: Throwable =>
@@ -195,8 +196,7 @@ class TableSinkITCase extends BatchTestBase {
 
     // enable drop enforcer to make the query can run
     tEnv.getConfig.getConfiguration.setString("table.exec.sink.not-null-enforcer", "drop")
-    tEnv.sqlUpdate("INSERT INTO not_null_sink SELECT * FROM nullable_src")
-    tEnv.execute("job name")
+    tEnv.executeSql("INSERT INTO not_null_sink SELECT * FROM nullable_src").await()
 
     val result = TestValuesTableFactory.getResults("not_null_sink")
     val expected = List("book,1,12", "book,4,11", "fruit,3,44")

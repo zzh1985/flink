@@ -21,6 +21,7 @@ package org.apache.flink.core.memory;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.TaskManagerExceptionUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -146,12 +147,12 @@ public final class MemorySegmentFactory {
 			// once we find a common way to handle OOM errors in netty threads.
 			// Here we enrich it to propagate better OOM message to the receiver
 			// if it happens in a netty thread.
-			Throwable enrichedOutOfMemoryError = ExceptionUtils.tryEnrichTaskManagerError(outOfMemoryError);
+			TaskManagerExceptionUtils.tryEnrichTaskManagerError(outOfMemoryError);
 			if (ExceptionUtils.isDirectOutOfMemoryError(outOfMemoryError)) {
-				LOG.error("Cannot allocate direct memory segment", enrichedOutOfMemoryError);
+				LOG.error("Cannot allocate direct memory segment", outOfMemoryError);
 			}
 
-			ExceptionUtils.rethrow(enrichedOutOfMemoryError);
+			ExceptionUtils.rethrow(outOfMemoryError);
 			return null;
 		}
 	}

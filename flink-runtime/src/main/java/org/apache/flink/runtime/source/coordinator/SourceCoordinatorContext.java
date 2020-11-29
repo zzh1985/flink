@@ -31,12 +31,19 @@ import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.operators.coordination.TaskNotRunningException;
 import org.apache.flink.runtime.source.event.AddSplitEvent;
+import org.apache.flink.runtime.source.event.NoMoreSplitsEvent;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
+import org.apache.flink.runtime.util.ExecutorThreadFactory;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkRuntimeException;
-import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.ThrowableCatchingRunnable;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -44,9 +51,10 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
 import static org.apache.flink.runtime.source.coordinator.SourceCoordinatorSerdeUtils.readRegisteredReaders;
@@ -77,10 +85,15 @@ import static org.apache.flink.runtime.source.coordinator.SourceCoordinatorSerde
  * @param <SplitT> the type of the splits.
  */
 @Internal
-public class SourceCoordinatorContext<SplitT extends SourceSplit> implements SplitEnumeratorContext<SplitT> {
+public class SourceCoordinatorContext<SplitT extends SourceSplit>
+		implements SplitEnumeratorContext<SplitT>, AutoCloseable {
+
+	private static final Logger LOG = LoggerFactory.getLogger(SourceCoordinatorContext.class);
+
 	private final ExecutorService coordinatorExecutor;
 	private final ExecutorNotifier notifier;
 	private final OperatorCoordinator.Context operatorCoordinatorContext;
+	private final SimpleVersionedSerializer<SplitT> splitSerializer;
 	private final ConcurrentMap<Integer, ReaderInfo> registeredReaders;
 	private final SplitAssignmentTracker<SplitT> assignmentTracker;
 	private final SourceCoordinatorProvider.CoordinatorExecutorThreadFactory coordinatorThreadFactory;
@@ -90,9 +103,10 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 			ExecutorService coordinatorExecutor,
 			SourceCoordinatorProvider.CoordinatorExecutorThreadFactory coordinatorThreadFactory,
 			int numWorkerThreads,
-			OperatorCoordinator.Context operatorCoordinatorContext) {
+			OperatorCoordinator.Context operatorCoordinatorContext,
+			SimpleVersionedSerializer<SplitT> splitSerializer) {
 		this(coordinatorExecutor, coordinatorThreadFactory, numWorkerThreads, operatorCoordinatorContext,
-				new SplitAssignmentTracker<>());
+				splitSerializer, new SplitAssignmentTracker<>());
 	}
 
 	// Package private method for unit test.
@@ -101,22 +115,22 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 			SourceCoordinatorProvider.CoordinatorExecutorThreadFactory coordinatorThreadFactory,
 			int numWorkerThreads,
 			OperatorCoordinator.Context operatorCoordinatorContext,
+			SimpleVersionedSerializer<SplitT> splitSerializer,
 			SplitAssignmentTracker<SplitT> splitAssignmentTracker) {
 		this.coordinatorExecutor = coordinatorExecutor;
 		this.coordinatorThreadFactory = coordinatorThreadFactory;
 		this.operatorCoordinatorContext = operatorCoordinatorContext;
+		this.splitSerializer = splitSerializer;
 		this.registeredReaders = new ConcurrentHashMap<>();
 		this.assignmentTracker = splitAssignmentTracker;
 		this.coordinatorThreadName = coordinatorThreadFactory.getCoordinatorThreadName();
+
+		final Executor errorHandlingCoordinatorExecutor = (runnable) ->
+				coordinatorExecutor.execute(new ThrowableCatchingRunnable(this::handleUncaughtExceptionFromAsyncCall, runnable));
+
 		this.notifier = new ExecutorNotifier(
-				Executors.newScheduledThreadPool(numWorkerThreads, new ThreadFactory() {
-					private int index = 0;
-					@Override
-					public Thread newThread(Runnable r) {
-						return new Thread(r, coordinatorThreadName + "-worker-" + index++);
-					}
-				}),
-				coordinatorExecutor);
+				Executors.newScheduledThreadPool(numWorkerThreads, new ExecutorThreadFactory(coordinatorThreadName + "-worker")),
+				errorHandlingCoordinatorExecutor);
 	}
 
 	@Override
@@ -126,13 +140,15 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 
 	@Override
 	public void sendEventToSourceReader(int subtaskId, SourceEvent event) {
-		try {
-			operatorCoordinatorContext.sendEvent(new SourceEventWrapper(event), subtaskId);
-		} catch (TaskNotRunningException e) {
-			throw new FlinkRuntimeException(String.format("Failed to send event %s to subtask %d",
-					event,
-					subtaskId), e);
-		}
+		callInCoordinatorThread(() -> {
+			try {
+				operatorCoordinatorContext.sendEvent(new SourceEventWrapper(event), subtaskId);
+				return null;
+			} catch (TaskNotRunningException e) {
+				throw new FlinkRuntimeException(
+						String.format("Failed to send event %s to subtask %d", event, subtaskId), e);
+			}
+		}, String.format("Failed to send event %s to subtask %d", event, subtaskId));
 	}
 
 	@Override
@@ -148,34 +164,43 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 	@Override
 	public void assignSplits(SplitsAssignment<SplitT> assignment) {
 		// Ensure the split assignment is done by the the coordinator executor.
-		if (!coordinatorThreadFactory.isCurrentThreadCoordinatorThread()) {
+		callInCoordinatorThread(() -> {
+			// Ensure all the subtasks in the assignment have registered.
+			for (Integer subtaskId : assignment.assignment().keySet()) {
+				if (!registeredReaders.containsKey(subtaskId)) {
+					throw new IllegalArgumentException(String.format(
+							"Cannot assign splits %s to subtask %d because the subtask is not registered.",
+							registeredReaders.get(subtaskId), subtaskId));
+				}
+			}
+
+			assignmentTracker.recordSplitAssignment(assignment);
+			assignment.assignment().forEach(
+					(id, splits) -> {
+						try {
+							operatorCoordinatorContext.sendEvent(new AddSplitEvent<>(splits, splitSerializer), id);
+						} catch (TaskNotRunningException e) {
+							throw new FlinkRuntimeException(String.format(
+									"Failed to assign splits %s to reader %d.", splits, id), e);
+						} catch (IOException e) {
+							throw new FlinkRuntimeException("Failed to serialize splits.", e);
+						}
+					});
+			return null;
+		}, String.format("Failed to assign splits %s due to ", assignment));
+	}
+
+	@Override
+	public void signalNoMoreSplits(int subtask) {
+		// Ensure the split assignment is done by the the coordinator executor.
+		callInCoordinatorThread(() -> {
 			try {
-				coordinatorExecutor.submit(() -> assignSplits(assignment)).get();
-				return;
-			} catch (InterruptedException | ExecutionException e) {
-				throw new FlinkRuntimeException("Failed to assign splits due to", e);
+				operatorCoordinatorContext.sendEvent(new NoMoreSplitsEvent(), subtask);
+				return null; // void return value
+			} catch (TaskNotRunningException e) {
+				throw new FlinkRuntimeException("Failed to send 'NoMoreSplits' to reader " + subtask, e);
 			}
-		}
-
-		// Ensure all the subtasks in the assignment have registered.
-		for (Integer subtaskId : assignment.assignment().keySet()) {
-			if (!registeredReaders.containsKey(subtaskId)) {
-				throw new IllegalArgumentException(String.format(
-						"Cannot assign splits %s to subtask %d because the subtask is not registered.",
-						registeredReaders.get(subtaskId), subtaskId));
-			}
-		}
-
-		assignmentTracker.recordSplitAssignment(assignment);
-		assignment.assignment().forEach(
-				(id, splits) -> {
-					try {
-						operatorCoordinatorContext.sendEvent(new AddSplitEvent<>(splits), id);
-					} catch (TaskNotRunningException e) {
-						throw new FlinkRuntimeException(String.format(
-								"Failed to assign splits %s to reader %d.", splits, id), e);
-					}
-				});
+		}, "Failed to send 'NoMoreSplits' to reader " + subtask);
 	}
 
 	@Override
@@ -192,6 +217,18 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 		notifier.notifyReadyAsync(callable, handler);
 	}
 
+	@Override
+	public void runInCoordinatorThread(Runnable runnable) {
+		coordinatorExecutor.execute(runnable);
+	}
+
+	@Override
+	public void close() throws InterruptedException {
+		notifier.close();
+		coordinatorExecutor.shutdown();
+		coordinatorExecutor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+	}
+
 	// --------- Package private additional methods for the SourceCoordinator ------------
 
 	/**
@@ -201,6 +238,13 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 	 */
 	void failJob(Throwable cause) {
 		operatorCoordinatorContext.failJob(cause);
+	}
+
+	void handleUncaughtExceptionFromAsyncCall(Throwable t) {
+		ExceptionUtils.rethrowIfFatalErrorOrOOM(t);
+		LOG.error("Exception while handling result from async call in {}. Triggering job failover.",
+				coordinatorThreadName, t);
+		failJob(t);
 	}
 
 	/**
@@ -224,7 +268,6 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 	 * @param in the input from which the states are read.
 	 * @throws Exception when the restoration failed.
 	 */
-	@SuppressWarnings("unchecked")
 	void restoreState(
 			SimpleVersionedSerializer<SplitT> splitSerializer,
 			DataInputStream in) throws Exception {
@@ -249,8 +292,7 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 	 * @param subtaskId the subtask id of the source reader.
 	 */
 	void unregisterSourceReader(int subtaskId) {
-		Preconditions.checkNotNull(registeredReaders.remove(subtaskId), String.format(
-				"Failed to unregister source reader of id %s because it is not registered.", subtaskId));
+		registeredReaders.remove(subtaskId);
 	}
 
 	/**
@@ -270,5 +312,34 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit> implements Spl
 	 */
 	void onCheckpointComplete(long checkpointId) {
 		assignmentTracker.onCheckpointComplete(checkpointId);
+	}
+
+	OperatorCoordinator.Context getCoordinatorContext() {
+		return operatorCoordinatorContext;
+	}
+
+	// ---------------- private helper methods -----------------
+
+	/**
+	 * A helper method that delegates the callable to the coordinator thread if the
+	 * current thread is not the coordinator thread, otherwise call the callable right away.
+	 *
+	 * @param callable the callable to delegate.
+	 */
+	private <V> V callInCoordinatorThread(Callable<V> callable, String errorMessage) {
+		// Ensure the split assignment is done by the the coordinator executor.
+		if (!coordinatorThreadFactory.isCurrentThreadCoordinatorThread()) {
+			try {
+				return coordinatorExecutor.submit(callable).get();
+			} catch (InterruptedException | ExecutionException e) {
+				throw new FlinkRuntimeException(errorMessage, e);
+			}
+		}
+
+		try {
+			return callable.call();
+		} catch (Exception e) {
+			throw new FlinkRuntimeException(errorMessage, e);
+		}
 	}
 }

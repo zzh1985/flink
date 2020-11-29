@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.operators.coordination;
 
+import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.messages.Acknowledge;
 
@@ -43,7 +44,7 @@ import java.util.concurrent.CompletableFuture;
  * The methods on the {@link Context} are safe to be called from another thread than the thread that
  * calls the Coordinator's methods.
  */
-public interface OperatorCoordinator extends AutoCloseable {
+public interface OperatorCoordinator extends CheckpointListener, AutoCloseable {
 
 	/**
 	 * Starts the coordinator. This method is called once at the beginning, before any other methods.
@@ -71,14 +72,7 @@ public interface OperatorCoordinator extends AutoCloseable {
 	// ------------------------------------------------------------------------
 
 	/**
-	 * Called when one of the subtasks of the task running the coordinated operator failed.
-	 */
-	void subtaskFailed(int subtask, @Nullable Throwable reason);
-
-	// ------------------------------------------------------------------------
-
-	/**
-	 * Takes a checkpoint or the coordinator. The checkpoint is identified by the given ID.
+	 * Takes a checkpoint of the coordinator. The checkpoint is identified by the given ID.
 	 *
 	 * <p>To confirm the checkpoint and store state in it, the given {@code CompletableFuture}
 	 * must be completed with the state. To abort or dis-confirm the checkpoint, the given
@@ -102,27 +96,20 @@ public interface OperatorCoordinator extends AutoCloseable {
 	void checkpointCoordinator(long checkpointId, CompletableFuture<byte[]> resultFuture) throws Exception;
 
 	/**
-	 * Notifies the coordinator that the checkpoint with the given checkpointId completes and
-	 * was committed.
-	 *
-	 * <h3>Checkpoint Subsuming</h3>
-	 *
-	 * <p>Checkpoint IDs are strictly increasing. A checkpoint with higher ID always subsumes
-	 * a checkpoint with lower ID. For example, when checkpoint T is confirmed complete, the
-	 * code should treat all checkpoints with lower ID (T-1, T-2, etc.) also as confirmed.
-	 *
-	 * <h3>Exceptions</h3>
-	 *
-	 * <p>This method is not supposed to throw an exception indicating the the checkpoint cannot
-	 * be completed. By the time we notify that the checkpoint is complete, the checkpoint is
-	 * committed and cannot be aborted any more.
-	 *
-	 * <p>If the coordinator gets into an inconsistent state internally, as a result of logic that
-	 * runs after this notification, it should fail the job ({@link Context#failJob(Throwable)})
-	 * instead. Any exception propagating from this method may be treated as a fatal error for the
-	 * JobManager, crashing the JobManager, and leading to an expensive "master failover" procedure.
+	 * We override the method here to remove the checked exception. Please check the
+	 * Java docs of {@link CheckpointListener#notifyCheckpointComplete(long)} for more
+	 * detail semantic of the method.
 	 */
-	void checkpointComplete(long checkpointId);
+	@Override
+	void notifyCheckpointComplete(long checkpointId);
+
+	/**
+	 * We override the method here to remove the checked exception. Please check the
+	 * Java docs of {@link CheckpointListener#notifyCheckpointAborted(long)} for more
+	 * detail semantic of the method.
+	 */
+	@Override
+	default void notifyCheckpointAborted(long checkpointId) {}
 
 	/**
 	 * Resets the coordinator to the given checkpoint.
@@ -133,17 +120,42 @@ public interface OperatorCoordinator extends AutoCloseable {
 	 * to {@code Context} methods. For example, Events being sent by the Coordinator after this method
 	 * returns are assumed to take place after the checkpoint that was restored.
 	 *
+	 * <p>This method is called with a null state argument in the following situations:
+	 * <ul>
+	 *   <li>There is a recovery and there was no completed checkpoint yet.</li>
+	 *   <li>There is a recovery from a completed checkpoint/savepoint but it contained no state
+	 *       for the coordinator.</li>
+	 * </ul>
+	 * In both cases, the coordinator should reset to an empty (new) state.
+	 *
 	 * <h2>Restoring implicitly notifies of Checkpoint Completion</h2>
 	 *
 	 * <p>Restoring to a checkpoint is a way of confirming that the checkpoint is complete.
 	 * It is safe to commit side-effects that are predicated on checkpoint completion after this
 	 * call.
 	 *
-	 * <p>Even if no call to {@link #checkpointComplete(long)} happened, the checkpoint can still be
+	 * <p>Even if no call to {@link #notifyCheckpointComplete(long)} happened, the checkpoint can still be
 	 * complete (for example when a system failure happened directly after committing the checkpoint,
-	 * before calling the {@link #checkpointComplete(long)} method).
+	 * before calling the {@link #notifyCheckpointComplete(long)} method).
 	 */
-	void resetToCheckpoint(byte[] checkpointData) throws Exception;
+	void resetToCheckpoint(@Nullable byte[] checkpointData) throws Exception;
+
+	// ------------------------------------------------------------------------
+
+	/**
+	 * Called when one of the subtasks of the task running the coordinated operator goes
+	 * through a failover (failure / recovery cycle).
+	 *
+	 * <p>This method is called in case of a <i>partial failover</i> meaning a failover handled
+	 * by the scheduler's failover strategy (by default recovering a pipelined region).
+	 * The method is invoked for each subtask involved in that partial failover.
+	 *
+	 * <p>In contrast to this method, the {@link #resetToCheckpoint(byte[])} method is called in
+	 * the case of a global failover, which is the case when the coordinator (JobManager) fails
+	 * or the scheduler invokes its safety net where the whole system is reset to the latest
+	 * complete checkpoint.
+	 */
+	void subtaskFailed(int subtask, @Nullable Throwable reason);
 
 	// ------------------------------------------------------------------------
 	// ------------------------------------------------------------------------
@@ -181,6 +193,12 @@ public interface OperatorCoordinator extends AutoCloseable {
 		 * Gets the current parallelism with which this operator is executed.
 		 */
 		int currentParallelism();
+
+		/**
+		 * Gets the classloader that contains the additional dependencies, which are not
+		 * part of the JVM's classpath.
+		 */
+		ClassLoader getUserCodeClassloader();
 	}
 
 	// ------------------------------------------------------------------------
@@ -203,6 +221,6 @@ public interface OperatorCoordinator extends AutoCloseable {
 		/**
 		 * Creates the {@code OperatorCoordinator}, using the given context.
 		 */
-		OperatorCoordinator create(Context context);
+		OperatorCoordinator create(Context context) throws Exception;
 	}
 }

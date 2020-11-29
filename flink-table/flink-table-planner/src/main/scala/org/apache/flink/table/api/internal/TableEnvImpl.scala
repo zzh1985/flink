@@ -25,14 +25,14 @@ import org.apache.flink.api.java.operators.DataSink
 import org.apache.flink.core.execution.JobClient
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.internal.TableResultImpl.PrintStyle
-import org.apache.flink.table.calcite.{CalciteParser, FlinkPlannerImpl, FlinkRelBuilder}
+import org.apache.flink.table.calcite.{CalciteParser, FlinkPlannerImpl}
 import org.apache.flink.table.catalog._
 import org.apache.flink.table.catalog.exceptions.{TableNotExistException => _, _}
 import org.apache.flink.table.delegation.Parser
 import org.apache.flink.table.expressions._
 import org.apache.flink.table.expressions.resolver.lookups.TableReferenceLookup
 import org.apache.flink.table.factories.{TableFactoryUtil, TableSinkFactoryContextImpl}
-import org.apache.flink.table.functions.{AggregateFunction, ScalarFunction, TableFunction, UserDefinedAggregateFunction, _}
+import org.apache.flink.table.functions.{AggregateFunction, ScalarFunction, TableFunction, _}
 import org.apache.flink.table.module.{Module, ModuleManager}
 import org.apache.flink.table.operations.ddl._
 import org.apache.flink.table.operations.utils.OperationTreeBuilder
@@ -44,10 +44,11 @@ import org.apache.flink.table.types.{AbstractDataType, DataType}
 import org.apache.flink.table.util.JavaScalaConversionUtil
 import org.apache.flink.table.utils.PrintUtils
 import org.apache.flink.types.Row
+
 import org.apache.calcite.jdbc.CalciteSchemaBuilder.asRootSchema
 import org.apache.calcite.sql.parser.SqlParser
 import org.apache.calcite.tools.FrameworkConfig
-import org.apache.commons.lang3.StringUtils
+
 import _root_.java.lang.{Iterable => JIterable, Long => JLong}
 import _root_.java.util.function.{Function => JFunction, Supplier => JSupplier}
 import _root_.java.util.{Optional, Collections => JCollections, HashMap => JHashMap, List => JList, Map => JMap}
@@ -64,7 +65,8 @@ import _root_.scala.util.Try
 abstract class TableEnvImpl(
     val config: TableConfig,
     private val catalogManager: CatalogManager,
-    private val moduleManager: ModuleManager)
+    private val moduleManager: ModuleManager,
+    private val userClassLoader: ClassLoader)
   extends TableEnvironmentInternal {
 
   // Table API/SQL function catalog
@@ -242,7 +244,7 @@ abstract class TableEnvImpl(
     */
   private[flink] def registerAggregateFunctionInternal[T: TypeInformation, ACC: TypeInformation](
       name: String,
-      function: UserDefinedAggregateFunction[T, ACC])
+      function: ImperativeAggregateFunction[T, ACC])
     : Unit = {
     val resultTypeInfo: TypeInformation[T] = UserDefinedFunctionHelper
       .getReturnTypeOfAggregateFunction(
@@ -444,7 +446,7 @@ abstract class TableEnvImpl(
     val objectIdentifier: ObjectIdentifier = catalogManager.qualifyIdentifier(identifier)
 
     JavaScalaConversionUtil.toScala(catalogManager.getTable(objectIdentifier))
-      .map(t => new CatalogQueryOperation(objectIdentifier, t.getTable.getSchema))
+      .map(t => new CatalogQueryOperation(objectIdentifier, t.getResolvedSchema))
   }
 
   override def listModules(): Array[String] = {
@@ -576,7 +578,7 @@ abstract class TableEnvImpl(
         .jobClient(jobClient)
         .resultKind(ResultKind.SUCCESS_WITH_CONTENT)
         .tableSchema(builder.build())
-        .data(JCollections.singletonList(Row.of(affectedRowCounts: _*)))
+        .data(new InsertResultIterator(jobClient, Row.of(affectedRowCounts: _*), userClassLoader))
         .build()
     } catch {
       case e: Exception =>
@@ -598,7 +600,7 @@ abstract class TableEnvImpl(
         .tableSchema(tableSchema)
         .data(selectResultProvider.getResultIterator)
         .setPrintStyle(
-          PrintStyle.tableau(PrintUtils.MAX_COLUMN_WIDTH, PrintUtils.NULL_COLUMN, false))
+          PrintStyle.tableau(PrintUtils.MAX_COLUMN_WIDTH, PrintUtils.NULL_COLUMN, true, false))
         .build
     } catch {
       case e: Exception =>
@@ -740,13 +742,17 @@ abstract class TableEnvImpl(
         catalogManager.setCurrentDatabase(useDatabaseOperation.getDatabaseName)
         TableResultImpl.TABLE_RESULT_OK
       case _: ShowCatalogsOperation =>
-        buildShowResult(listCatalogs())
+        buildShowResult("catalog name", listCatalogs())
+      case _: ShowCurrentCatalogOperation =>
+        buildShowResult("current catalog name", Array(catalogManager.getCurrentCatalog))
       case _: ShowDatabasesOperation =>
-        buildShowResult(listDatabases())
+        buildShowResult("database name", listDatabases())
+      case _: ShowCurrentDatabaseOperation =>
+        buildShowResult("current database name", Array(catalogManager.getCurrentDatabase))
       case _: ShowTablesOperation =>
-        buildShowResult(listTables())
+        buildShowResult("table name", listTables())
       case _: ShowFunctionsOperation =>
-        buildShowResult(listFunctions())
+        buildShowResult("function name", listFunctions())
       case createViewOperation: CreateViewOperation =>
         if (createViewOperation.isTemporary) {
           catalogManager.createTemporaryTable(
@@ -772,7 +778,7 @@ abstract class TableEnvImpl(
         }
         TableResultImpl.TABLE_RESULT_OK
       case _: ShowViewsOperation =>
-        buildShowResult(listViews())
+        buildShowResult("view name", listViews())
       case explainOperation: ExplainOperation =>
         val explanation = explainInternal(JCollections.singletonList(explainOperation.getChild))
         TableResultImpl.builder.
@@ -798,12 +804,12 @@ abstract class TableEnvImpl(
     }
   }
 
-  private def buildShowResult(objects: Array[String]): TableResult = {
+  private def buildShowResult(columnName: String, objects: Array[String]): TableResult = {
     val rows = Array.ofDim[Object](objects.length, 1)
     objects.zipWithIndex.foreach {
       case (obj, i) => rows(i)(0) = obj
     }
-    buildResult(Array("result"), Array(DataTypes.STRING), rows)
+    buildResult(Array(columnName), Array(DataTypes.STRING), rows)
   }
 
   private def buildDescribeResult(schema: TableSchema): TableResult = {
@@ -821,15 +827,15 @@ abstract class TableEnvImpl(
       case (c, i) => {
         val logicalType = c.getType.getLogicalType
         data(i)(0) = c.getName
-        data(i)(1) = StringUtils.removeEnd(logicalType.toString, " NOT NULL")
+        data(i)(1) = logicalType.copy(true).asSummaryString()
         data(i)(2) = Boolean.box(logicalType.isNullable)
         data(i)(3) = fieldToPrimaryKey.getOrDefault(c.getName, null)
-        data(i)(4) = c.getExpr.orElse(null)
+        data(i)(4) = c.explainExtras().orElse(null)
         data(i)(5) = fieldToWatermark.getOrDefault(c.getName, null)
       }
     }
     buildResult(
-      Array("name", "type", "null", "key", "compute column", "watermark"),
+      Array("name", "type", "null", "key", "extras", "watermark"),
       Array(DataTypes.STRING, DataTypes.STRING, DataTypes.BOOLEAN, DataTypes.STRING,
         DataTypes.STRING, DataTypes.STRING),
       data)
@@ -1067,7 +1073,8 @@ abstract class TableEnvImpl(
   }
 
   protected def getTableSink(objectIdentifier: ObjectIdentifier): Option[TableSink[_]] = {
-    JavaScalaConversionUtil.toScala(catalogManager.getTable(objectIdentifier))
+    val lookupResult = JavaScalaConversionUtil.toScala(catalogManager.getTable(objectIdentifier))
+    lookupResult
       .map(_.getTable) match {
       case Some(s) if s.isInstanceOf[ConnectorCatalogTable[_, _]] =>
 
@@ -1079,7 +1086,8 @@ abstract class TableEnvImpl(
         val catalog = catalogManager.getCatalog(objectIdentifier.getCatalogName)
         val catalogTable = s.asInstanceOf[CatalogTable]
         val context = new TableSinkFactoryContextImpl(
-          objectIdentifier, catalogTable, config.getConfiguration, true)
+          objectIdentifier, catalogTable, config.getConfiguration, true,
+          lookupResult.get.isTemporary)
         if (catalog.isPresent && catalog.get().getTableFactory.isPresent) {
           val sink = TableFactoryUtil.createTableSinkForCatalogTable(catalog.get(), context)
           if (sink.isPresent) {

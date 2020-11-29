@@ -193,14 +193,19 @@ public class CollectSinkOperatorCoordinator implements OperatorCoordinator, Coor
 	}
 
 	@Override
-	public void checkpointComplete(long checkpointId) {
+	public void notifyCheckpointComplete(long checkpointId) {
 	}
 
 	@Override
-	public void resetToCheckpoint(byte[] checkpointData) throws Exception {
-		ByteArrayInputStream bais = new ByteArrayInputStream(checkpointData);
-		ObjectInputStream ois = new ObjectInputStream(bais);
-		address = (InetSocketAddress) ois.readObject();
+	public void resetToCheckpoint(@Nullable byte[] checkpointData) throws Exception {
+		if (checkpointData == null) {
+			// restore before any checkpoint completed
+			closeConnection();
+		} else {
+			ByteArrayInputStream bais = new ByteArrayInputStream(checkpointData);
+			ObjectInputStream ois = new ObjectInputStream(bais);
+			address = (InetSocketAddress) ois.readObject();
+		}
 	}
 
 	/**

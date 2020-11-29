@@ -38,8 +38,8 @@ public class StreamPlanEnvironment extends StreamExecutionEnvironment {
 		return pipeline;
 	}
 
-	public StreamPlanEnvironment(Configuration configuration, int parallelism) {
-		super(configuration);
+	public StreamPlanEnvironment(Configuration configuration, ClassLoader userClassLoader, int parallelism) {
+		super(configuration, userClassLoader);
 		if (parallelism > 0) {
 			setParallelism(parallelism);
 		}
@@ -54,7 +54,10 @@ public class StreamPlanEnvironment extends StreamExecutionEnvironment {
 	}
 
 	public void setAsContext() {
-		StreamExecutionEnvironmentFactory factory = () -> this;
+		StreamExecutionEnvironmentFactory factory = conf -> {
+			this.configure(conf, getUserClassloader());
+			return this;
+		};
 		initializeContextEnvironment(factory);
 	}
 

@@ -42,7 +42,7 @@ import org.apache.flink.runtime.scheduler.DefaultScheduler;
 import org.apache.flink.runtime.scheduler.SchedulerTestingUtils;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.state.StreamStateHandle;
-import org.apache.flink.runtime.state.TestingCheckpointStorageCoordinatorView;
+import org.apache.flink.runtime.state.TestingCheckpointStorageAccessCoordinatorView;
 import org.apache.flink.runtime.state.memory.ByteStreamStateHandle;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorOperatorEventGateway;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
@@ -78,6 +78,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -322,6 +323,17 @@ public class OperatorCoordinatorSchedulerTest extends TestLogger {
 	}
 
 	@Test
+	public void testGlobalFailureBeforeCheckpointResetsToEmptyState() throws Exception {
+		final DefaultScheduler scheduler = createSchedulerAndDeployTasks();
+		final TestingOperatorCoordinator coordinator = getCoordinator(scheduler);
+
+		failGlobalAndRestart(scheduler, new TestException());
+
+		assertSame("coordinator should have null restored state",
+			TestingOperatorCoordinator.NULL_RESTORE_VALUE, coordinator.getLastRestoredCheckpointState());
+	}
+
+	@Test
 	public void testLocalFailureDoesNotResetToCheckpoint() throws Exception {
 		final DefaultScheduler scheduler = createSchedulerAndDeployTasks();
 		final TestingOperatorCoordinator coordinator = getCoordinator(scheduler);
@@ -438,7 +450,7 @@ public class OperatorCoordinatorSchedulerTest extends TestLogger {
 		final byte[] savepointMetadata = serializeAsCheckpointMetadata(testOperatorId, coordinatorState);
 		final String savepointPointer = "testingSavepointPointer";
 
-		final TestingCheckpointStorageCoordinatorView storage = new TestingCheckpointStorageCoordinatorView();
+		final TestingCheckpointStorageAccessCoordinatorView storage = new TestingCheckpointStorageAccessCoordinatorView();
 		storage.registerSavepoint(savepointPointer, savepointMetadata);
 
 		final Consumer<JobGraph> savepointConfigurer = (jobGraph) -> {
